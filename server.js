@@ -250,6 +250,14 @@ function ack(b) {
 
 // ---- views for the ESP32 / dashboard -------------------------------------------------------
 function floatingAll() { let f = 0; for (const i of insts.values()) f += i.engine.floating(); return f; }
+// the one trade (open position, else pending limit) that the ESP32 shows on the page of this instrument
+function tradeBrief(i) {
+  const en = i.engine, q = en.quote, p = en.positions[0], o = en.orders[0], d = i.cfg.digits;
+  const r = x => Math.round(x * Math.pow(10, d + 1)) / Math.pow(10, d + 1);
+  if (p) { const dir = p.side === 1 ? 1 : -1, px = dir === 1 ? q.bid : q.ask; return { k: 'pos', side: p.side, vol: p.volume, px: r(p.open), sl: r(p.sl), tp: r(p.tp), fl: Math.round(dir * (px - p.open) * p.volume / 100 * en.mult * 100) / 100 }; }
+  if (o) return { k: 'ord', side: o.side, vol: o.volume, px: r(o.price), sl: r(o.sl), tp: r(o.tp), fl: 0 };
+  return null;
+}
 function metaView(inst) {
   rollDay();
   const en = inst.engine, st = en.state(), q = st.quote.bid ? st.quote : { bid: 0, ask: 0, t: 0 }, cf = inst.bpe.c;
@@ -260,7 +268,7 @@ function metaView(inst) {
     takenToday: meta.takenToday, positions: st.positions, orders: st.orders, tradeCount: allTrades().length,
     pending: meta.signals.filter(s => s.status === 'new').length, equityTail: allEquity().slice(-30).map(e => e[1]),
     kz: { asia: !!inst.bpe.kzA, london: !!inst.bpe.kzL, nyam: !!inst.bpe.kzAM, nypm: !!inst.bpe.kzPM, waitEquityOpen: !!cf.waitEquityOpen },
-    symbols: [...insts.values()].map(i => ({ sym: i.sym, digits: i.cfg.digits, mult: i.engine.mult, bid: i.engine.quote.bid, ask: i.engine.quote.ask, lastBarT: i.engine.lastBarT, open: i.engine.positions.length, pend: i.engine.orders.length, bias: i.bpe.bias, kz: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, waitEquityOpen: !!i.bpe.c.waitEquityOpen } })),
+    symbols: [...insts.values()].map(i => ({ sym: i.sym, digits: i.cfg.digits, mult: i.engine.mult, bid: i.engine.quote.bid, ask: i.engine.quote.ask, lastBarT: i.engine.lastBarT, open: i.engine.positions.length, pend: i.engine.orders.length, bias: i.bpe.bias, tr: tradeBrief(i), kz: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, waitEquityOpen: !!i.bpe.c.waitEquityOpen } })),
     openAll: allPositions().length + allOrders().length, positionsAll: allPositions(), ordersAll: allOrders(),
   };
 }
