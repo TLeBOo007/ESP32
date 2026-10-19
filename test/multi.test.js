@@ -40,6 +40,7 @@ async function call(base, method, p, body) {
   assert.strictEqual(ch.sym, 'EURUSD'); assert.strictEqual(ch.digits, 5); assert(ch.bars.length >= 2 && ch.bars[0].length === 5); assert(Array.isArray(ch.poi));
   assert(ch.bars.every(b => b[1] < 2), 'EURUSD candles, not XAUUSD'); assert.strictEqual(ch.positions.length, 1); assert.strictEqual(ch.positions[0].price, 1.099);
   assert('setup' in ch, 'chart reply carries the waiting-setup preview (null when none)'); assert.strictEqual((await call(base, 'GET', '/api/chart?sym=XAUUSD&tf=15')).json.sym, 'XAUUSD'); assert.strictEqual((await call(base, 'GET', '/api/chart')).code, 200);
+  { const mm = (await call(base, 'GET', '/api/meta')).json; assert(mm.symbols.length > 0 && mm.symbols.every(x => 'su' in x), 'every symbol in /api/meta carries su (waiting setup for the ESP32, null when none)'); }
   // EURUSD hits TP: +0.0110 * 1 lot(100 units) * 100000 = +1100 ; shared balance moves for all
   await bar('EURUSD', 2, 1.099, 1.11, 1.099, 1.105);
   e = await m('EURUSD'); assert.strictEqual(e.positions.length, 0);

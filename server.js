@@ -41,6 +41,11 @@ const PRESETS = {
   US30:   { digits: 2, spread: 2.0,     mult: 1,      yahoo: 'YM=F',      twelve: 'DIA',     spreadTD: 0.02 },
   EURUSD: { digits: 5, spread: 0.00012, mult: 100000, yahoo: 'EURUSD=X',  twelve: 'EUR/USD', bpe: { waitEquityOpen: false } },
   USDJPY: { digits: 3, spread: 0.012,   mult: 100000 / 150, jpy: true, yahoo: 'JPY=X', twelve: 'USD/JPY', bpe: { waitEquityOpen: false } },
+  US500:  { digits: 2, spread: 0.5,     mult: 1,      yahoo: 'ES=F',      twelve: 'SPY',     spreadTD: 0.02 },
+  GBPUSD: { digits: 5, spread: 0.00015, mult: 100000, yahoo: 'GBPUSD=X',  twelve: 'GBP/USD', bpe: { waitEquityOpen: false } },
+  AUDUSD: { digits: 5, spread: 0.00014, mult: 100000, yahoo: 'AUDUSD=X',  twelve: 'AUD/USD', bpe: { waitEquityOpen: false } },
+  USDCAD: { digits: 5, spread: 0.00018, mult: 100000 / 1.37, jpy: true, yahoo: 'CAD=X', twelve: 'USD/CAD', bpe: { waitEquityOpen: false } },   // jpy:true = USD is the base, profit is in the quote currency (CAD) -> converted at the current rate
+  XAGUSD: { digits: 3, spread: 0.03,    mult: 5000,   yahoo: 'SI=F',      twelve: 'XAG/USD', bpe: { waitEquityOpen: false } },
   XAUUSD: { digits: 2, spread: 0.30,    mult: 100,    yahoo: 'GC=F',      twelve: 'XAU/USD', bpe: { waitEquityOpen: false, biasMode: 0 } }   // gold: H4-only bias (H4 vs D1 often conflict -> no trades); such trades get grade B/C,
 };
 const LEGACY = !process.env.SYMBOLS;                                       // old single-symbol setup: SYMBOL / DIGITS / SPREAD / MULTIPLIER decide everything
@@ -258,6 +263,14 @@ function tradeBrief(i) {
   if (o) return { k: 'ord', side: o.side, vol: o.volume, px: r(o.price), sl: r(o.sl), tp: r(o.tp), fl: 0 };
   return null;
 }
+// Compact view of the waiting setup for the ESP32 screen (same data as the dashboard banner; read-only, never an order).
+// s: 1 sweep, 2 waiting MSS/CISD, 3 waiting FVG, 4 FVG found (x=1 model complete), 5 M4 box. e/sl/tp/rr = projected entry (an estimate unless x=1).
+function setupBrief(i) {
+  const p = i.bpe.preview; if (!p) return null;
+  const pj = p.proj, S = { sweep: 1, mss: 2, fvgwait: 3, fvg: 4, box: 5 }[p.stage]; if (!S) return null;
+  return { d: p.dir, s: S, x: p.exact ? 1 : 0, rdy: p.ready ? 1 : 0, lv: p.level || 0, ln: p.levelName || '', m: p.model || '',
+    e: pj ? pj.entry : 0, sl: pj ? pj.sl : 0, tp: pj ? pj.tp : 0, rr: pj ? pj.rr : 0, ok: pj && pj.okRR ? 1 : 0 };
+}
 function metaView(inst) {
   rollDay();
   const en = inst.engine, st = en.state(), q = st.quote.bid ? st.quote : { bid: 0, ask: 0, t: 0 }, cf = inst.bpe.c;
@@ -268,7 +281,7 @@ function metaView(inst) {
     takenToday: meta.takenToday, positions: st.positions, orders: st.orders, tradeCount: allTrades().length,
     pending: meta.signals.filter(s => s.status === 'new').length, equityTail: allEquity().slice(-30).map(e => e[1]),
     kz: { asia: !!inst.bpe.kzA, london: !!inst.bpe.kzL, nyam: !!inst.bpe.kzAM, nypm: !!inst.bpe.kzPM, waitEquityOpen: !!cf.waitEquityOpen },
-    symbols: [...insts.values()].map(i => ({ sym: i.sym, digits: i.cfg.digits, mult: i.engine.mult, bid: i.engine.quote.bid, ask: i.engine.quote.ask, lastBarT: i.engine.lastBarT, open: i.engine.positions.length, pend: i.engine.orders.length, bias: i.bpe.bias, tr: tradeBrief(i), kz: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, waitEquityOpen: !!i.bpe.c.waitEquityOpen } })),
+    symbols: [...insts.values()].map(i => ({ sym: i.sym, digits: i.cfg.digits, mult: i.engine.mult, bid: i.engine.quote.bid, ask: i.engine.quote.ask, lastBarT: i.engine.lastBarT, open: i.engine.positions.length, pend: i.engine.orders.length, bias: i.bpe.bias, tr: tradeBrief(i), su: setupBrief(i), kz: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, waitEquityOpen: !!i.bpe.c.waitEquityOpen } })),
     openAll: allPositions().length + allOrders().length, positionsAll: allPositions(), ordersAll: allOrders(),
   };
 }

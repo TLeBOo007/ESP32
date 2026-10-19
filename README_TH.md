@@ -102,14 +102,16 @@ LINE Notify ปิดบริการไปแล้ว ต้องใช้ 
 
 หมายเหตุ: ข้อความ "ทำไมออก" เป็นการวิเคราะห์อัตโนมัติจากราคาหลังเข้า ไม่ใช่ข้อสรุปว่าเหตุผลจริงคืออะไร และแท่งที่โดน SL จะไม่ถูกนับ MFE (ใช้กติกา stop-first เดียวกับ paper engine)
 
-## หลายสินทรัพย์ (US100, US30, EURUSD, USDJPY, XAUUSD)
+## หลายสินทรัพย์ (US100, US30, US500, EURUSD, GBPUSD, AUDUSD, USDCAD, USDJPY, XAUUSD, XAGUSD)
 
-ตั้งตัวแปรเดียวใน Railway: `SYMBOLS=US100,US30,EURUSD,USDJPY,XAUUSD` (ลบหรือไม่ใส่ `SYMBOLS` = โหมดเดิมสินทรัพย์เดียวตาม `SYMBOL`)
+ตั้งตัวแปรเดียวใน Railway: `SYMBOLS=US100,US30,US500,EURUSD,GBPUSD,AUDUSD,USDCAD,USDJPY,XAUUSD,XAGUSD` (ลบหรือไม่ใส่ `SYMBOLS` = โหมดเดิมสินทรัพย์เดียวตาม `SYMBOL`)
 
 - **บัญชี paper เดียว** ยอดเงินและ ID ร่วมกัน แต่แต่ละสินทรัพย์มีแท่งราคา เครื่องยนต์ BPE และฟีดของตัวเอง ราคาดึงจากเว็บฟรีตามชื่อ (Yahoo: `NQ=F`, `YM=F`, `EURUSD=X`, `JPY=X`, `GC=F`)
 - **ช่วงเวลาเทรด (killzone) ตามสินทรัพย์:** US100/US30 = NY AM+PM · EURUSD = London + NY AM (เริ่ม 08:30 NY) · USDJPY = Asia + NY AM · XAUUSD = London + NY AM ทำให้มีหน้าเทรดเกือบทั้งวัน แต่ไม่ได้แปลว่าเทรดตลอด 24 ชม. และปิดเสาร์-อาทิตย์
 - **สเปรด/มูลค่าต่อ lot** ใส่ค่าทั่วไปให้แล้ว (EURUSD 1.2 pip, USDJPY 1.2 pip, ทอง 0.30, US30 2.0, US100 1.0) ปรับได้ด้วย `SPREAD_EURUSD=0.00015`, `MULT_XAUUSD=100`, `FEED_SYMBOL_XAUUSD=XAUUSD=X` ฯลฯ และตั้งค่า BPE เฉพาะตัวด้วย `BPE_CONFIG_EURUSD={"minRR":2.5}`
-- USDJPY: กำไรเป็นเงินเยน ระบบแปลงเป็นดอลลาร์ด้วยราคาปัจจุบันของแท่งล่าสุด (ประมาณการ)
+- **เพิ่มใหม่:** US500 (Yahoo `ES=F`, killzone NY AM+PM) · GBPUSD (`GBPUSD=X`, London + NY AM) · AUDUSD (`AUDUSD=X`, Asia + NY AM) · USDCAD (`CAD=X`, NY AM) · XAGUSD เงิน (`SI=F`, London + NY AM) สเปรดเป็นค่าประมาณทั่วไป ปรับได้ด้วย `SPREAD_<คู่>`
+- ฟีดฟรีมีเพดานการเรียก ถ้าใช้ Twelve Data (ฟรี 8 ครั้ง/นาที, 800 ครั้ง/วัน) ไม่ควรเปิดทั้ง 10 ตัว แนะนำ Yahoo
+- USDJPY และ USDCAD: กำไรเป็นเงินเยน/ดอลลาร์แคนาดา ระบบแปลงเป็นดอลลาร์ด้วยราคาปัจจุบันของแท่งล่าสุด (ประมาณการ)
 - **ความเสี่ยงรวม:** ความเสี่ยง 2% ต่อไม้ยังเท่าเดิม แต่มีตัวคุม `BPE_MAX_OPEN` (ค่าเริ่มต้น 3 = เปิด/รอพร้อมกันรวมทุกสินทรัพย์ไม่เกิน 3) และ `BPE_DAILY_LOSS` (ขาดทุนรายวันรวมทุกสินทรัพย์) ไม้ต่อสินทรัพย์ต่อวัน `BPE_MAX_TRADES` (3) ระวัง EURUSD กับ USDJPY (และทอง) เคลื่อนไหวตามดอลลาร์ ไม้อาจชนะ/แพ้พร้อมกัน
 - **Twelve Data (ฟรี)** ใช้ได้กับ EUR/USD, USD/JPY, XAU/USD ส่วนดัชนีใช้ ETF แทน (QQQ, DIA) แนะนำ Yahoo ก่อน เพราะได้ดัชนีฟิวเจอร์สจริง
 - API เพิ่ม `sym`: `/api/meta?sym=EURUSD`, `/api/bpe?sym=`, `/api/trades?sym=`, `/api/signals?sym=`, `POST /api/order {sym,...}` และ `POST /api/history {sym,...}` (ไม่ใส่ = สินทรัพย์แรก)
