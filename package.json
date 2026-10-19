@@ -2,11 +2,13 @@
   "name": "chartdesk-bpe-paper",
   "version": "1.0.0",
   "private": true,
-  "description": "Paper trading server for the Chart Desk BPE ESP32 signal engine",
+  "description": "Cloud side of Chart Desk BPE: signal engine, paper account, dashboard",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/engine.test.js && node test/server.test.js"
+    "test": "node test/engine.test.js && node test/server.test.js && node test/multi.test.js && node test/feed.test.js && node test/bpe.test.js && node test/bpe_server.test.js && node test/feed_server.test.js"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }

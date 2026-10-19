@@ -26,6 +26,8 @@
   input { width:100%; padding:9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
   button { margin-top:10px; padding:9px 14px; border:0; border-radius:6px; background:var(--acc); color:#fff; font:inherit; cursor:pointer; }
   svg { width:100%; height:180px; display:block; }
+  .tabs button { margin:0 6px 6px 0; padding:5px 10px; background:var(--card); color:var(--fg); border:1px solid var(--line); font-size:13px; }
+  .tabs button.on { background:var(--acc); color:#fff; border-color:var(--acc); }
   #err { color:var(--dn); font-size:13px; min-height:18px; }
 </style>
 </head>
@@ -39,6 +41,8 @@
 <main id="app" hidden>
   <h1>BPE Paper Desk <small id="upd"></small></h1>
   <div class="grid" id="tiles"></div>
+  <div class="card" style="margin-bottom:14px"><h2>ทุกสินทรัพย์</h2><div id="overview" class="scroll"></div></div>
+  <div class="card" style="margin-bottom:14px"><h2>ตัวสร้างสัญญาณ (BPE) <span id="symtabs" class="tabs" style="margin-left:8px"></span></h2><div id="bpe" class="scroll"></div></div>
   <div class="card" style="margin-bottom:14px"><h2>ยอดเงินตามไม้ที่ปิด</h2><svg id="chart" viewBox="0 0 600 180" preserveAspectRatio="none"></svg></div>
   <div class="card" style="margin-bottom:14px"><h2>ไม้ที่เปิดอยู่ / ออเดอร์รอ</h2><div class="scroll" id="open"></div></div>
   <div class="card" style="margin-bottom:14px"><h2>สัญญาณจาก TradingView และการตัดสินใจของ ESP32</h2><div class="scroll" id="sigs"></div></div>
@@ -47,6 +51,8 @@
 <script>
 const $ = id => document.getElementById(id);
 const KEY = 'bpe_paper_key';
+let selSym = '', DG = {};
+const px = (x, sym) => (x === null || x === undefined || x === 0) ? '-' : fmt(x, DG[sym] ?? 2);
 let key = ''; try { key = localStorage.getItem(KEY) || ''; } catch (e) {}
 const SM = 7 * 3600;
 const ny = t => t ? new Date((t - SM) * 1000).toISOString().slice(5, 16).replace('T', ' ') : '-';
@@ -73,21 +79,39 @@ function chart(eq, start) {
 }
 async function refresh() {
   try {
-    const [s, st, tr, sg] = await Promise.all([api('/api/meta'), api('/api/stats'), api('/api/trades?limit=100'), api('/api/signals')]);
+    const [s, st, tr, sg, bp] = await Promise.all([api('/api/meta' + (selSym ? '?sym=' + selSym : '')), api('/api/stats'), api('/api/trades?limit=100'), api('/api/signals'), api('/api/bpe' + (selSym ? '?sym=' + selSym : ''))]);
+    if (!selSym) selSym = s.symbol; s.symbols.forEach(x => DG[x.sym] = x.digits);
     $('gate').hidden = true; $('app').hidden = false;
     const pnl = s.balance - s.startBalance;
     $('tiles').innerHTML = [
       ['ยอดเงิน', fmt(s.balance), ''], ['Equity', fmt(s.equity), cls(s.equity - s.balance)], ['กำไร/ขาดทุนรวม', fmt(pnl), cls(pnl)],
       ['รวม R', fmt(st.sumR), cls(st.sumR)], ['จำนวนไม้', st.trades + ' (ชนะ ' + st.winRate + '%)', ''], ['Profit factor', st.profitFactor === null ? '∞' : fmt(st.profitFactor), ''],
-      ['Max drawdown', fmt(st.maxDrawdown), 'dn'], ['วันนี้', fmt(s.todayPnl) + ' · เข้า ' + s.takenToday + ' ไม้', cls(s.todayPnl)], ['ราคา (bid)', s.bid ? fmt(s.bid) : '-', ''], ['แท่งล่าสุดจาก TV', s.barAge < 0 ? 'ยังไม่เคยได้รับ' : (s.barAge < 60 ? s.barAge + ' วิ ที่แล้ว' : Math.round(s.barAge / 60) + ' นาทีที่แล้ว'), s.barAge < 0 || s.barAge > 900 ? 'dn' : ''],
+      ['Max drawdown', fmt(st.maxDrawdown), 'dn'], ['วันนี้', fmt(s.todayPnl) + ' · เข้า ' + s.takenToday + ' ไม้', cls(s.todayPnl)], ['ราคา ' + s.symbol, s.bid ? px(s.bid, s.symbol) : '-', ''], ['แท่งล่าสุดจาก TV', s.barAge < 0 ? 'ยังไม่เคยได้รับ' : (s.barAge < 60 ? s.barAge + ' วิ ที่แล้ว' : Math.round(s.barAge / 60) + ' นาทีที่แล้ว'), s.barAge < 0 || s.barAge > 900 ? 'dn' : ''],
     ].map(t => `<div class="card"><div class="k">${t[0]}</div><div class="v ${t[2]}">${t[1]}</div></div>`).join('');
-    const op = s.positions.map(p => [p.id, side(p.side), 'ไม้เปิด', fmt(p.open), fmt(p.sl), fmt(p.tp), p.volume / 100, ny(p.openT), p.comment || ''])
-      .concat(s.orders.map(o => [o.id, side(o.side), 'limit รอ', fmt(o.price), fmt(o.sl), fmt(o.tp), o.volume / 100, ny(o.createdT), o.comment || '']));
-    $('open').innerHTML = table(['#', 'ทิศ', 'สถานะ', 'ราคาเข้า', 'SL', 'TP', 'Vol', 'เวลา NY', 'หมายเหตุ'], op);
-    const cl = tr.trades.slice().reverse().map(t => [t.id, side(t.side), fmt(t.open), fmt(t.close), t.reason, `<span class="${cls(t.pnl)}">${fmt(t.pnl)}</span>`, `<span class="${cls(t.R)}">${fmt(t.R)}R</span>`, ny(t.openT), ny(t.closeT)]);
-    $('closed').innerHTML = table(['#', 'ทิศ', 'เข้า', 'ออก', 'เหตุผล', 'P/L', 'R', 'เปิด NY', 'ปิด NY'], cl);
+    const op = s.positionsAll.map(p => [p.id, p.sym, side(p.side), 'ไม้เปิด', px(p.open, p.sym), px(p.sl, p.sym), px(p.tp, p.sym), p.volume / 100, ny(p.openT), p.comment || ''])
+      .concat(s.ordersAll.map(o => [o.id, o.sym, side(o.side), 'limit รอ', px(o.price, o.sym), px(o.sl, o.sym), px(o.tp, o.sym), o.volume / 100, ny(o.createdT), o.comment || '']));
+    $('open').innerHTML = table(['#', 'สินทรัพย์', 'ทิศ', 'สถานะ', 'ราคาเข้า', 'SL', 'TP', 'Vol', 'เวลา NY', 'หมายเหตุ'], op);
+    window.__tr = {}; tr.trades.forEach(t => window.__tr[t.id] = t);
+    const cl = tr.trades.slice().reverse().map(t => [`<a href="#" onclick="showTrade(${t.id});return false">${t.id}</a>`, t.sym || '', side(t.side), px(t.open, t.sym), px(t.close, t.sym), t.reason, `<span class="${cls(t.pnl)}">${fmt(t.pnl)}</span>`, `<span class="${cls(t.R)}">${fmt(t.R)}R</span>`, ny(t.openT), ny(t.closeT)]);
+    $('closed').innerHTML = '<div class="k">กดเลขไม้เพื่อดูเหตุผลเข้า/ออก</div><div id="tdetail"></div>' + table(['#', 'สินทรัพย์', 'ทิศ', 'เข้า', 'ออก', 'เหตุผล', 'P/L', 'R', 'เปิด NY', 'ปิด NY'], cl);
     const stTxt = { new: 'รอ ESP32', taken: 'รับแล้ว', skipped: 'ข้าม' };
-    $('sigs').innerHTML = table(['#', 'ทิศ/คำสั่ง', 'ราคา', 'SL', 'TP', 'สถานะ', 'เหตุผล / หมายเหตุ', 'หมายเหตุ TV'], sg.signals.map(x => [x.id, x.action, x.price ? fmt(x.price) : '-', x.sl ? fmt(x.sl) : '-', x.tp ? fmt(x.tp) : '-', `<span class="${x.status === 'taken' ? 'up' : x.status === 'skipped' ? 'dn' : ''}">${stTxt[x.status] || x.status}</span>`, x.reason || x.note || '', x.comment || '']));
+    $('sigs').innerHTML = table(['#', 'สินทรัพย์', 'ทิศ/คำสั่ง', 'ราคา', 'SL', 'TP', 'สถานะ', 'เหตุผล / หมายเหตุ', 'หมายเหตุ TV'], sg.signals.map(x => [x.id, x.sym || '', x.action, px(x.price, x.sym), px(x.sl, x.sym), px(x.tp, x.sym), `<span class="${x.status === 'taken' ? 'up' : x.status === 'skipped' ? 'dn' : ''}">${stTxt[x.status] || x.status}</span>`, x.reason || x.note || '', x.comment || '']));
+    if (!bp.enabled) $('bpe').innerHTML = '<div class="empty">ปิดอยู่ (BPE_ENABLED=0) รับสัญญาณจาก TradingView อย่างเดียว</div>';
+    else {
+      const warm = bp.bars.d1 < 12 ? ' <span class="dn">(ประวัติ D1 ยังไม่พอ ทิศทางจะว่างจนกว่าจะมี 12 วัน นำเข้าราคาย้อนหลังด้วย /api/history)</span>' : '';
+      $('bpe').innerHTML = table(['รายการ', 'ค่า'], [
+        ['ช่วงเวลา', bp.kz + ' · เวลา NY ' + bp.ny], ['ทิศทาง (Bias)', bp.bias + ' (H4 ' + bp.biasH4 + ', D1 ' + bp.biasD1 + ')' + warm],
+        ['POI', bp.poi.length ? bp.poi.map(p => p.type + ' ' + px(p.bot, selSym) + '-' + px(p.top, selSym)).join(' · ') : '-'], ['สถานะ', bp.state], ['สัญญาณล่าสุด', bp.last],
+        ['แหล่งราคา', bp.feed.kind === 'none' ? 'ไม่ได้ตั้ง (รอแท่งจาก /tv หรือ MT4)' : bp.feed.kind + ' ' + bp.feed.symbol + (bp.feed.lastError ? ' <span class="dn">ผิดพลาด: ' + bp.feed.lastError + '</span>' : ' · ดึงล่าสุด ' + (bp.feed.lastPollT ? new Date(bp.feed.lastPollT * 1000).toLocaleTimeString() : '-') + (bp.feed.forwardStart ? ' · เริ่ม Forward ' + new Date(bp.feed.forwardStart * 1000).toLocaleString() : ''))],
+        ['จำนวนแท่งที่เก็บ', 'M5 ' + bp.bars.m5 + ' · H4 ' + bp.bars.h4 + ' · D1 ' + bp.bars.d1],
+      ]) + '<div class="k" style="margin-top:8px">เหตุการณ์ล่าสุด</div>' + table(['NY', 'เหตุการณ์', 'ทิศ', 'รายละเอียด'], bp.log.slice().reverse().map(e => [e.ny, e.evt, e.side, e.det]));
+    }
+    $('symtabs').innerHTML = s.symbols.map(x => `<button class="${x.sym === selSym ? 'on' : ''}" onclick="selSym='${x.sym}';refresh()">${x.sym}</button>`).join('');
+    const age = f => f && f.lastPollT ? Math.round((Date.now() / 1000 - f.lastPollT) / 60) + ' นาที' : '-';
+    $('overview').innerHTML = table(['สินทรัพย์', 'ช่วงเวลา', 'Bias', 'สถานะ', 'ราคา', 'ไม้/รอ', 'ดึงราคาล่าสุด', 'สัญญาณล่าสุด'], bp.symbols.map(x => {
+      const m = s.symbols.find(y => y.sym === x.sym) || {};
+      return [`<a href="#" onclick="selSym='${x.sym}';refresh();return false">${x.sym}</a>`, x.kz, x.bias, x.state, px(m.bid, x.sym), (m.open || 0) + '/' + (m.pend || 0), x.feed && x.feed.lastError ? '<span class="dn">' + x.feed.lastError + '</span>' : age(x.feed), x.last];
+    }));
     chart(tr.equity, s.startBalance);
     $('upd').textContent = 'แท่งล่าสุด ' + ny(s.lastBarT) + ' NY · อัปเดต ' + new Date().toLocaleTimeString();
   } catch (e) {
@@ -98,6 +122,11 @@ async function refresh() {
 $('ok').onclick = () => { key = $('key').value.trim(); try { localStorage.setItem(KEY, key); } catch (e) {} refresh(); };
 if (!key) $('gate').hidden = false;
 refresh(); setInterval(() => { if (key) refresh(); }, 15000);
+function showTrade(id) {
+  const t = window.__tr[id]; if (!t) return;
+  const esc = x => String(x == null ? '' : x).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  $('tdetail').innerHTML = '<pre style="white-space:pre-wrap;background:#0002;padding:10px;border-radius:8px">' + '<b>ไม้ #' + t.id + ' ' + (t.side === 1 ? 'BUY' : 'SELL') + '  ' + t.R + 'R  (' + t.pnl + ')</b>\n\n<b>ทำไมถึงเข้า</b>\n' + esc(t.why ? t.why.text : '(ไม่มีข้อมูล — ไม้นี้ไม่ได้มาจาก BPE)') + (t.why && t.why.chain ? '\n\nลำดับเหตุการณ์:\n' + esc(t.why.chain.join('\n')) : '') + '\n\n<b>ทำไมถึงออก</b>\n' + esc(t.exitWhy) + '</pre>';
+}
 </script>
 </body>
 </html>

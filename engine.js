@@ -7,10 +7,15 @@ const BUY = 1, SELL = 2;
 
 class Engine {
   constructor(opts = {}) {
+    this.acct = opts.acct || {};           // {balance, nextId}: shared by all instruments so there is one account and unique ids
+    this.sym = opts.sym || '';
     this.startBalance = opts.startBalance ?? 10000;
     this.mult = opts.multiplier ?? 1;      // account-currency value of 1 price unit per 1.00 unit of volume (US100 CFD = 1, MNQ = 2)
     this.reset();
   }
+
+  get balance() { return this.acct.balance; } set balance(v) { this.acct.balance = v; }
+  get nextId() { return this.acct.nextId; } set nextId(v) { this.acct.nextId = v; }
 
   reset() {
     this.balance = this.startBalance;
@@ -46,9 +51,9 @@ class Engine {
     if (sl > 0 && (side === BUY ? sl >= entry : sl <= entry)) return { error: 'SL_WRONG_SIDE' };
     if (tp > 0 && (side === BUY ? tp <= entry : tp >= entry)) return { error: 'TP_WRONG_SIDE' };
     const id = this.nextId++;
-    const base = { id, side, volume, sl, tp, sl0: sl, tp0: tp, comment: String(o.comment || ''), createdT: Number(o.t) || 0, afterT: Number(o.afterT) || 0 };   // afterT: bars up to this server time are ignored (signal came from that bar)
+    const base = { id, sym: this.sym, side, volume, sl, tp, sl0: sl, tp0: tp, comment: String(o.comment || ''), createdT: Number(o.t) || 0, afterT: Number(o.afterT) || 0 };   // afterT: bars up to this server time are ignored (signal came from that bar)
     if (kind === 'market') {
-      const p = { ...base, open: entry, openT: Number(o.t) || 0 };
+      const p = { ...base, open: entry, openT: Number(o.t) || 0, best: entry, worst: entry, bars: 0 };
       this.positions.push(p);
       this._emit({ type: 'open', pos: { ...p }, via: 'market' });
     } else {
@@ -93,14 +98,39 @@ class Engine {
     const pnl = dir * (px - p.open) * vol / 100 * this.mult;   // volume in 0.01 units
     this.balance += pnl;
     const risk = Math.abs(p.open - p.sl0);
+    const mfeR = risk > 0 && p.best != null ? round(dir * (p.best - p.open) / risk, 2) : 0;
+    const maeR = risk > 0 && p.worst != null ? round(Math.min(0, dir * (p.worst - p.open) / risk), 2) : 0;
     const tr = {
-      id: p.id, side: p.side, volume: vol, open: p.open, close: px, sl0: p.sl0, tp0: p.tp0,
+      mfeR: Math.max(0, mfeR), maeR, bars: p.bars || 0, why: p.why || null,
+      id: p.id, sym: this.sym, side: p.side, volume: vol, open: p.open, close: px, sl0: p.sl0, tp0: p.tp0,
       openT: p.openT, closeT: Number(t) || 0, reason, pnl: round(pnl, 2),
       R: risk > 0 ? round(dir * (px - p.open) / risk, 3) : 0, comment: p.comment,
     };
+    tr.exitWhy = this._exitWhy(p, tr, reason, px, risk, dir);
     this.trades.push(tr);
     this.equity.push([tr.closeT, round(this.balance, 2)]);
     this._emit({ type: 'close', trade: tr, balance: round(this.balance, 2) });
+  }
+
+  // Plain-language reason for the exit, from what the price did after entry.
+  _exitWhy(p, tr, reason, px, risk, dir) {
+    const f = x => Number(x).toFixed(2), w = p.why, held = tr.bars + ' แท่ง M5 (~' + tr.bars * 5 + ' นาที)', out = [];
+    const ctx = 'ถือ ' + held + ' · ไปทางที่ถูกสูงสุด +' + tr.mfeR + 'R · สวนสูงสุด ' + tr.maeR + 'R';
+    if (reason === 'SL') {
+      out.push('โดน SL @ ' + f(px) + ' (' + (tr.R <= -0.95 ? 'เสียเต็ม 1R' : tr.R + 'R') + ')');
+      if (tr.mfeR >= 1) out.push('ราคาเคยไปทางที่ถูกถึง +' + tr.mfeR + 'R แล้วกลับมาโดน SL (พิจารณาเลื่อน SL/ทยอยปิด)');
+      else if (tr.mfeR >= 0.3) out.push('ไปทางที่ถูกได้เล็กน้อย (+' + tr.mfeR + 'R) แล้วกลับตัว');
+      else out.push(tr.bars <= 2 ? 'โดนเร็วมาก — ราคาไม่ตอบรับโซนเข้าเลย' : 'ราคาแทบไม่ไปทางที่ถูกเลย');
+      if (w && w.poi) {
+        const broke = dir === 1 ? p.worst < w.poi.bot : p.worst > w.poi.top;
+        out.push(broke ? 'ราคาหลุดทะลุโซน POI (' + w.poi.type + ' ' + w.poi.tf + ') — สมมติฐานการกลับตัวจากโซนนี้ล้มเหลว' : 'ราคายังอยู่ในโซน POI แต่ SL แคบกว่า — โดนกวาดก่อนวิ่งต่อ');
+      }
+      if (w && w.sweep) out.push('ตั้งสมมติฐานจากการกวาด ' + w.sweep.name + ' แล้ว ' + w.disp.mode + ' ยืนยัน แต่ไม่มี follow-through');
+    } else if (reason === 'TP') {
+      out.push('ถึงเป้า TP @ ' + f(px) + (w && w.tp ? ' (' + w.tp.name + ')' : '') + ' +' + tr.R + 'R');
+    } else out.push('ปิดด้วยเหตุผล: ' + reason + ' @ ' + f(px) + ' (' + tr.R + 'R)');
+    out.push(ctx);
+    return out.join('\n');
   }
 
   // ---- bars -----------------------------------------------------------------------------
@@ -114,7 +144,7 @@ class Engine {
       const touched = o.side === BUY ? b.l + sp <= o.price : b.h >= o.price;
       if (!touched) continue;
       this.orders.splice(this.orders.indexOf(o), 1);
-      const p = { id: o.id, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp, sl0: o.sl0, tp0: o.tp0, comment: o.comment, open: o.price, openT: b.t, afterT: 0 };
+      const p = { id: o.id, sym: this.sym, side: o.side, volume: o.volume, sl: o.sl, tp: o.tp, sl0: o.sl0, tp0: o.tp0, comment: o.comment, why: o.why, open: o.price, openT: b.t, afterT: 0, best: o.price, worst: o.price, bars: 0 };
       this.positions.push(p);
       this._emit({ type: 'open', pos: { ...p }, via: 'limit' });
     }
@@ -127,6 +157,11 @@ class Engine {
       } else {
         if (p.sl > 0 && b.h + sp >= p.sl) { px = Math.max(b.o + sp, p.sl); why = 'SL'; }
         else if (p.tp > 0 && b.l + sp <= p.tp) { px = p.tp; why = 'TP'; }
+      }
+      p.bars = (p.bars || 0) + (b.t > p.openT ? 1 : 0);
+      if (b.t > p.openT) {                                // excursion tracking (the fill bar itself is ambiguous, so it is skipped)
+        if (px === null) p.best = p.side === BUY ? Math.max(p.best, b.h) : Math.min(p.best, b.l + sp);   // stop-first: the closing bar's favourable side is not credited
+        p.worst = p.side === BUY ? Math.min(p.worst, b.l) : Math.max(p.worst, b.h + sp);
       }
       if (px !== null) {
         this._closeAmount(p, p.volume, px, b.t, why);
