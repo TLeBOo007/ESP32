@@ -19,8 +19,16 @@ const PORT = Number(process.env.PORT || 3000);
 const API_KEY = process.env.API_KEY || '';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'paper.json');
-const START_BALANCE = Number(process.env.START_BALANCE || 10000);
-const MIN_VOLUME = Number(process.env.MIN_VOLUME || 1), STEP_VOLUME = Number(process.env.STEP_VOLUME || 1), MAX_VOLUME = Number(process.env.MAX_VOLUME || 1000000);
+// EXAM=1: run this server as a Topstep-style evaluation account (futures contracts, trailing loss limit, target ...). See lib/exam.js and README_TH.md.
+const EXAM_ON = process.env.EXAM === '1';
+const hmToMin = (x, d) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(x || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : d; };
+const EXAM_CFG = !EXAM_ON ? null : Object.assign({
+  start: Number(process.env.START_BALANCE || 50000), target: Number(process.env.EXAM_TARGET || 3000), mll: Number(process.env.EXAM_MLL || 2000), dll: Number(process.env.EXAM_DLL || 0),
+  consistency: Number(process.env.EXAM_CONSISTENCY || 55) / 100, minDays: Number(process.env.EXAM_MIN_DAYS || 2), flatNY: hmToMin(process.env.EXAM_FLAT_NY, 16 * 60 + 5), openNY: hmToMin(process.env.EXAM_OPEN_NY, 18 * 60),
+  capContracts: Number(process.env.EXAM_CAP || 50), riskPct: Number(process.env.EXAM_RISK_PCT || 0.5), commissionRT: Number(process.env.EXAM_COMMISSION_RT || 0), mllOnEquity: process.env.EXAM_MLL_EQUITY !== '0',
+}, process.env.EXAM_CONFIG ? JSON.parse(process.env.EXAM_CONFIG) : {});
+const START_BALANCE = EXAM_ON ? EXAM_CFG.start : Number(process.env.START_BALANCE || 10000);
+const MIN_VOLUME = Number(process.env.MIN_VOLUME || (EXAM_ON ? 100 : 1)), STEP_VOLUME = Number(process.env.STEP_VOLUME || (EXAM_ON ? 100 : 1)), MAX_VOLUME = Number(process.env.MAX_VOLUME || (EXAM_ON ? EXAM_CFG.capContracts * 100 : 1000000));   // volume unit = 1/100 contract
 const LINE_TOKEN = process.env.LINE_CHANNEL_TOKEN || '';
 const LINE_TO = process.env.LINE_TO || '';
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || '';              // only needed for the "สถานะ" chat command (webhook signature check)
@@ -53,15 +61,28 @@ const PRESETS = {
   XAGUSD: { digits: 3, spread: 0.03,    mult: 5000,   yahoo: 'SI=F',      twelve: 'XAG/USD', bpe: { waitEquityOpen: false } },
   XAUUSD: { digits: 2, spread: 0.30,    mult: 100,    yahoo: 'GC=F',      twelve: 'XAU/USD', bpe: { waitEquityOpen: false, biasMode: 0 } }   // gold: H4-only bias (H4 vs D1 often conflict -> no trades); such trades get grade B/C,
 };
-const LEGACY = !process.env.SYMBOLS;                                       // old single-symbol setup: SYMBOL / DIGITS / SPREAD / MULTIPLIER decide everything
-const SYM_LIST = (process.env.SYMBOLS || process.env.SYMBOL || 'US100').split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
+// Exam mode trades micro futures: mult = dollars per 1.00 price unit per contract (MNQ $2/point, MES $5, MYM $0.50, MGC $10 per $1/oz,
+// M6E 12,500 EUR, M6B 6,250 GBP, M6A 10,000 AUD, SIL 1,000 oz); spread = about one tick. Check the contract list your evaluation allows.
+const FUT = {
+  US100:  { digits: 2, spread: 0.25,    mult: 2 },
+  US500:  { digits: 2, spread: 0.25,    mult: 5 },
+  US30:   { digits: 2, spread: 1.0,     mult: 0.5 },
+  XAUUSD: { digits: 2, spread: 0.10,    mult: 10 },
+  XAGUSD: { digits: 3, spread: 0.005,   mult: 1000 },
+  EURUSD: { digits: 5, spread: 0.00005, mult: 12500 },
+  GBPUSD: { digits: 5, spread: 0.0001,  mult: 6250 },
+  AUDUSD: { digits: 5, spread: 0.0001,  mult: 10000 },
+};
+const LEGACY = !process.env.SYMBOLS && !EXAM_ON;                                       // old single-symbol setup: SYMBOL / DIGITS / SPREAD / MULTIPLIER decide everything
+const SYM_LIST = (process.env.SYMBOLS || process.env.SYMBOL || 'US100').split(',').map(x => x.trim().toUpperCase()).filter(Boolean).filter(x => { if (EXAM_ON && !FUT[x]) { console.warn('EXAM: ' + x + ' has no micro-futures preset (USDJPY / USDCAD are quoted the other way round) - skipped'); return false; } return true; });
+if (!SYM_LIST.length) { console.error('EXAM: no usable symbols. Use SYMBOLS=' + Object.keys(FUT).join(',')); process.exit(1); }
 const ENTRY = new Set(['buy', 'sell', 'buy_limit', 'sell_limit']);
 const now0 = () => Math.floor(Date.now() / 1000);
 
 const acct = { balance: START_BALANCE, nextId: 1001 };
 const insts = new Map();                                                   // symbol -> { sym, cfg, engine, bpe, feed }
 for (const sym of SYM_LIST) {
-  const pr = PRESETS[sym] || {}, E = k => process.env[k + '_' + sym];
+  const pr = EXAM_ON ? { ...(PRESETS[sym] || {}), ...FUT[sym], jpy: false } : (PRESETS[sym] || {}), E = k => process.env[k + '_' + sym];
   const cfg = LEGACY
     ? { digits: Number(process.env.DIGITS || 2), spread: Number(process.env.SPREAD || 0), mult: Number(process.env.MULTIPLIER || 1), jpy: false, bpe: {} }
     : { digits: Number(E('DIGITS') || pr.digits || 2), mult: Number(E('MULT') || pr.mult || 1), jpy: !!pr.jpy, bpe: pr.bpe || {},
@@ -69,12 +90,12 @@ for (const sym of SYM_LIST) {
   cfg.feedSymbol = (LEGACY ? process.env.FEED_SYMBOL : E('FEED_SYMBOL')) || (FEED_KIND === 'twelvedata' ? pr.twelve : pr.yahoo) || undefined;
   const point = Math.pow(10, -cfg.digits);
   const inst = { sym, cfg, feed: null };
-  inst.engine = new Engine({ startBalance: START_BALANCE, multiplier: cfg.mult, acct, sym });
+  inst.engine = new Engine({ startBalance: START_BALANCE, multiplier: cfg.mult, acct, sym, commissionRT: EXAM_ON ? EXAM_CFG.commissionRT : 0 });
   inst.engine.spread = cfg.spread;
   inst.bpe = new Bpe(Object.assign({
     symbol: sym, digits: cfg.digits, point, tickSize: point, tickValue: point * cfg.mult,
     minLot: MIN_VOLUME / 100, lotStep: STEP_VOLUME / 100, maxLot: MAX_VOLUME / 100,
-    riskPercent: Number(process.env.BPE_RISK_PERCENT || 2), maxTradesPerDay: Number(process.env.BPE_MAX_TRADES || 3), dailyLossPct: Number(process.env.BPE_DAILY_LOSS || 10),
+    riskPercent: Number(process.env.BPE_RISK_PERCENT || (EXAM_ON ? EXAM_CFG.riskPct : 2)), maxTradesPerDay: Number(process.env.BPE_MAX_TRADES || 3), dailyLossPct: Number(process.env.BPE_DAILY_LOSS || (EXAM_ON ? 2 : 10)),
   }, process.env.BPE_CONFIG ? JSON.parse(process.env.BPE_CONFIG) : {}, cfg.bpe, E('BPE_CONFIG') ? JSON.parse(E('BPE_CONFIG')) : {}), {   // order: global BPE_CONFIG < the preset of this instrument < BPE_CONFIG_<SYM>
     balance: () => acct.balance,
     ours: () => {
@@ -121,6 +142,51 @@ try {
     console.log('state loaded:', allTrades().length, 'trades,', meta.signals.length, 'signals,', insts.size, 'instruments');
   }
 } catch (e) { console.error('could not load state:', e.message); }
+
+// ---- exam mode ---------------------------------------------------------------------------
+const { Exam } = require('./lib/exam');
+const exam = EXAM_ON ? new Exam(EXAM_CFG, meta.exam || {}) : null;
+let examView = null, examBusy = false;
+function examFlatten(reason, t) {
+  for (const i of insts.values()) {
+    for (const p of [...i.engine.positions]) i.engine.close(p.id, undefined, t, undefined, 'exam');
+    for (const o of [...i.engine.orders]) i.engine.cancel(o.id);
+    flush(i);
+  }
+  console.log('EXAM: everything closed (' + reason + ')');
+}
+function examEval() {
+  if (!exam || examBusy) return examView;
+  examBusy = true;
+  try {
+    const t = toServer(now());
+    const run = () => exam.evaluate({ trades: allTrades(), balance: acct.balance, floating: floatingAll(), open: allPositions().length, serverT: t });
+    let r = run(); const events = r.events.slice();
+    if (r.flatten) { examFlatten(r.flatten, t); r = run(); events.push(...r.events); }
+    meta.exam = exam.serialize(); examView = r.view;
+    if (events.length) { notify(events.map(text => ({ type: 'status', text: '🎓 ' + text }))); save(); }
+  } catch (e) { console.error('exam:', e); }
+  examBusy = false;
+  return examView;
+}
+// Guard for every NEW order (the ESP32 decides, the server enforces the evaluation rules): status, trading day, daily loss, stop required,
+// size clamped to the per-trade risk limit, contract cap. Returns {error} to refuse, or may lower b.volume.
+function examGuard(inst, b) {
+  if (!exam) return null;
+  const view = examEval(), t = toServer(now()), side = b.side === 2 ? 2 : 1, kind = b.kind === 'market' ? 'market' : 'limit', q = inst.engine.quote;
+  const entry = kind === 'market' ? (side === 1 ? Number(b.ask || q.ask) : Number(b.bid || q.bid)) : Number(b.price), sl = Number(b.sl) || 0;
+  let vol = Math.round(Number(b.volume));
+  if (!(vol > 0)) return { error: 'BAD_VOLUME' };
+  if (!(sl > 0) || !(entry > 0)) return { error: 'EXAM_NO_STOP: an order needs a price and a stop loss' };
+  const perContract = Math.abs(entry - sl) * inst.engine.mult, maxRisk = exam.c.riskPct / 100 * exam.c.start;
+  const fit = Math.floor(maxRisk / (perContract + exam.c.commissionRT) + 1e-9);
+  if (fit < 1) return { error: `EXAM_RISK: 1 contract risks about $${perContract.toFixed(0)}, over the limit of $${maxRisk.toFixed(0)} per trade` };
+  if (vol > fit * 100) vol = fit * 100;
+  const contracts = (allPositions().reduce((a, p) => a + p.volume, 0) + allOrders().reduce((a, o) => a + o.volume, 0)) / 100;
+  const g = exam.canOpen(view, t, contracts, vol / 100);
+  if (!g.ok) return { error: g.why };
+  b.volume = vol; return null;
+}
 
 let saveTimer = null;
 function save() {
@@ -192,7 +258,7 @@ function sendDaily(dayKey, startBal) {
 }
 function statusData() {
   rollDay();
-  return { balance: acct.balance, dayStart: meta.dayStartBalance, open: allPositions().length, pending: allOrders().length,
+  return { exam: exam ? examEval() : null, balance: acct.balance, dayStart: meta.dayStartBalance, open: allPositions().length, pending: allOrders().length,
     symbols: [...insts.values()].map(i => { const s = i.bpe.status(); return { sym: i.sym, digits: i.cfg.digits, bid: i.engine.quote.bid, bias: s.bias, biasH4: s.biasH4, biasD1: s.biasD1, kz: s.kz, su: setupBrief(i), tr: tradeBrief(i) }; }) };
 }
 function checkFeeds() {
@@ -253,6 +319,7 @@ function ingestBar(inst, t, o, h, l, c, isServerTime, evaluate = true) {
     }
   }
   flush(inst, events);
+  if (exam && ok && evaluate) examEval();
   return { ok, processed: ok ? 1 : 0, lastBarT: engine.lastBarT, signals: made, sym: inst.sym };
 }
 
@@ -373,6 +440,7 @@ function authed(req, alt) {
 const symOf = (b, url) => instOf((b && (b.sym || b.symbol)) || (url && url.searchParams.get('sym')));
 const handlers = {
   'GET /api/meta': (_b, url) => metaView(symOf(null, url)),
+  'GET /api/exam': () => (exam ? { ...examEval(), instruments: [...insts.values()].map(i => ({ sym: i.sym, mult: i.engine.mult, spread: i.cfg.spread })) } : { enabled: false }),
   'GET /api/state': (_b, url) => symOf(null, url).engine.state(),
   'GET /api/stats': () => allStats(),
   'GET /api/trades': (_b, url) => { const sym = url.searchParams.get('sym'); let t = allTrades(); if (sym) t = t.filter(x => x.sym === sym.toUpperCase()); return { trades: t.slice(-Number(url.searchParams.get('limit') || 200)), equity: allEquity().slice(-500) }; },
@@ -384,7 +452,7 @@ const handlers = {
   },
   'POST /api/signals/ack': b => ack(b),
   'POST /api/history': b => importHistory(b),
-  'POST /api/order': b => { rollDay(); if (b.afterBarUtc > 0) b.afterT = toServer(Number(b.afterBarUtc)); const inst = symOf(b); const r = inst.engine.placeOrder(b); flush(inst); return r; },
+  'POST /api/order': b => { rollDay(); if (b.afterBarUtc > 0) b.afterT = toServer(Number(b.afterBarUtc)); const inst = symOf(b); const g = examGuard(inst, b); if (g) return g; const r = inst.engine.placeOrder(b); flush(inst); return r; },
   'POST /api/cancel': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.cancel(Number(b.id)); flush(inst); return r; },
   'POST /api/amend': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.amend(Number(b.id), Number(b.sl), Number(b.tp)); save(); return r; },
   'POST /api/close': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.close(Number(b.id), Number(b.price), Number(b.t), Number(b.volume), b.reason || 'time'); flush(inst); return r; },
@@ -411,6 +479,7 @@ const handlers = {
   'POST /api/reset': b => {
     if (b.balance > 0) for (const i of insts.values()) i.engine.startBalance = Number(b.balance);
     for (const i of insts.values()) { i.engine.reset(); i.bpe.used = []; i.bpe.s.state = 0; }
+    if (exam) { exam.reset(); meta.exam = exam.serialize(); }
     meta.signals = []; meta.nextSig = 1; meta.dayKey = -1; meta.dayStartBalance = acct.balance; meta.takenToday = 0; save(); return { ok: true, balance: acct.balance };
   },
 };
@@ -464,6 +533,6 @@ if (FEED_KIND !== 'none') {
   feed = FIRST.feed;
 }
 if (require.main === module) {
-  server.listen(PORT, () => { console.log(`paper server on :${PORT}, symbols ${SYM_LIST.join(',')}, start balance ${engine.startBalance}, data ${DATA_FILE}, feed ${FEED_KIND}`); let d = 1000; for (const f of feeds.values()) { f.start(d); d += 4000; } setInterval(checkFeeds, 60000).unref(); });
+  server.listen(PORT, () => { console.log(`paper server on :${PORT}, symbols ${SYM_LIST.join(',')}, start balance ${engine.startBalance}, data ${DATA_FILE}, feed ${FEED_KIND}`); let d = 1000; for (const f of feeds.values()) { f.start(d); d += 4000; } setInterval(checkFeeds, 60000).unref(); if (exam) setInterval(examEval, 30000).unref(); });
 }
-module.exports = { server, engine, meta, bpe, feed, insts, acct, statusN, checkFeeds, sendDaily };
+module.exports = { server, engine, meta, bpe, feed, insts, acct, statusN, checkFeeds, sendDaily, exam, examEval, examGuard };

@@ -10,6 +10,7 @@ class Engine {
     this.acct = opts.acct || {};           // {balance, nextId}: shared by all instruments so there is one account and unique ids
     this.sym = opts.sym || '';
     this.startBalance = opts.startBalance ?? 10000;
+    this.commissionRT = opts.commissionRT ?? 0;   // fee per 1.00 lot (contract) per round turn, charged when a position is closed (0 = none)
     this.mult = opts.multiplier ?? 1;      // account-currency value of 1 price unit per 1.00 unit of volume (US100 CFD = 1, MNQ = 2)
     this.reset();
   }
@@ -95,7 +96,7 @@ class Engine {
 
   _closeAmount(p, vol, px, t, reason) {
     const dir = p.side === BUY ? 1 : -1;
-    const pnl = dir * (px - p.open) * vol / 100 * this.mult;   // volume in 0.01 units
+    const fee = this.commissionRT * vol / 100, pnl = dir * (px - p.open) * vol / 100 * this.mult - fee;   // volume in 0.01 units; pnl is net of the commission
     this.balance += pnl;
     const risk = Math.abs(p.open - p.sl0);
     const mfeR = risk > 0 && p.best != null ? round(dir * (p.best - p.open) / risk, 2) : 0;
@@ -103,7 +104,7 @@ class Engine {
     const tr = {
       mfeR: Math.max(0, mfeR), maeR, bars: p.bars || 0, why: p.why || null,
       id: p.id, sym: this.sym, side: p.side, volume: vol, open: p.open, close: px, sl0: p.sl0, tp0: p.tp0,
-      openT: p.openT, closeT: Number(t) || 0, reason, pnl: round(pnl, 2),
+      openT: p.openT, closeT: Number(t) || 0, reason, pnl: round(pnl, 2), fee: round(fee, 2),
       R: risk > 0 ? round(dir * (px - p.open) / risk, 3) : 0, comment: p.comment,
     };
     tr.exitWhy = this._exitWhy(p, tr, reason, px, risk, dir);

@@ -156,6 +156,10 @@
   .why h4 { margin:0 0 6px; font-size:14px; }
   .why pre { margin:0; white-space:pre-wrap; font:inherit; font-size:13.5px; line-height:1.6; }
   .why .stats { margin-top:10px; }
+  .examgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:16px 28px; }
+  .examgrid > div { min-width:0; } .examgrid small { display:block; color:var(--mut); font-size:12.5px; margin-bottom:2px; }
+  .examgrid .big { font-size:24px; font-weight:500; font-variant-numeric:tabular-nums; } .examgrid .sub { color:var(--mut); font-size:13px; margin-top:4px; }
+  .bar { height:8px; border-radius:4px; background:var(--wash); overflow:hidden; margin-top:8px; } .bar i { display:block; height:100%; background:var(--up); border-radius:4px; } .bar.warn i { background:var(--now); } .bar.bad i { background:var(--dn); }
   .bysym { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:0 28px; margin-bottom:16px; }
   .bysym div { white-space:nowrap; padding:8px 0; border-bottom:1px solid var(--rule); display:flex; justify-content:space-between; gap:10px; font-size:14px; }
 
@@ -200,6 +204,11 @@
   </header>
 
   <div class="account" id="account"></div>
+
+  <section id="examSec" hidden>
+    <div class="head"><h2>โหมดสอบ (กติกาแบบ Topstep)</h2><span class="note" id="examnote"></span></div>
+    <div class="examgrid" id="exam"></div>
+  </section>
 
   <section>
     <div class="head"><h2>ช่วงเวลาเทรดของแต่ละสินทรัพย์</h2><span class="note" id="boardnote"></span></div>
@@ -566,17 +575,32 @@ function renderSignals(sg) {
     `<tr><td>${x.id}</td><td><b>${x.sym || ''}</b></td><td>${esc(x.action)}</td><td>${px(x.price, x.sym)}</td><td>${px(x.sl, x.sym)}</td><td>${px(x.tp, x.sym)}</td><td class="${x.status === 'taken' ? 'up' : x.status === 'skipped' ? 'dn' : ''}">${stTxt[x.status] || esc(x.status)}</td><td style="white-space:normal">${esc(x.reason || x.note || x.comment || '')}</td></tr>`).join('')}</tbody></table>`;
 }
 
+function renderExam(x) {
+  const sec = $('examSec'); if (!x || !x.enabled) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const n = v => Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }), sg = v => (v >= 0 ? '+' : '') + n(v), cl = v => v > 0 ? 'up' : v < 0 ? 'dn' : '';
+  const st = x.status === 'failed' ? ['ไม่ผ่าน', 'dn'] : x.status === 'passed' ? ['ผ่านแล้ว', 'up'] : x.blockedToday ? ['หยุดวันนี้ (ขาดทุนรายวัน)', 'dn'] : x.windowOpen ? ['กำลังสอบ', ''] : ['นอกเวลาเทรด (ปิดไม้แล้ว)', 'mut'];
+  $('examnote').innerHTML = `<b class="${st[1]}">${st[0]}</b>`;
+  const bufPct = Math.max(0, Math.min(100, x.buffer / x.mll * 100)), bufCls = bufPct < 25 ? 'bad' : bufPct < 50 ? 'warn' : '';
+  $('exam').innerHTML =
+    `<div><small>กำไรเทียบเป้า</small><div class="big ${cl(x.profit)}">${sg(x.profit)} <span class="mut" style="font-size:15px">/ ${n(x.target)}</span></div><div class="bar"><i style="width:${Math.min(100, x.pct)}%"></i></div><div class="sub">${x.pct}% ของเป้า · ยอดเงิน ${n(x.balance)}</div></div>`
+    + `<div><small>เหลือก่อนถึงเพดานขาดทุนสูงสุด</small><div class="big">${n(x.buffer)}</div><div class="bar ${bufCls}"><i style="width:${bufPct}%"></i></div><div class="sub">เส้นเพดานอยู่ที่ ${n(x.floor)} (เลื่อนตามยอดสิ้นวัน ล็อกที่ ${n(x.start)})</div></div>`
+    + `<div><small>กำไรขาดทุนวันนี้</small><div class="big ${cl(x.dayPnl)}">${sg(x.dayPnl)}</div><div class="sub">${x.dll > 0 ? 'เหลือก่อนถึงเพดานรายวัน ' + n(x.dllLeft) + ' (เพดาน ' + n(x.dll) + ')' : 'ยังไม่ได้ตั้งเพดานขาดทุนรายวัน (EXAM_DLL)'}</div></div>`
+    + `<div><small>ความสม่ำเสมอ (วันที่ดีที่สุดต่อกำไรรวม)</small><div class="big ${x.profit > 0 && !x.consistencyOK ? 'dn' : ''}">${x.profit > 0 ? x.bestPct + '%' : '-'} <span class="mut" style="font-size:15px">เกณฑ์ ${Math.round(x.consistency * 100)}%</span></div><div class="sub">${x.profit > 0 && !x.consistencyOK ? 'ต้องมีกำไรรวมถึง ' + n(x.needProfit) + ' จึงจะผ่านข้อนี้' : 'วันเทรด ' + x.days + '/' + x.minDays + ' วัน'}</div></div>`
+    + `<div><small>ข้อจำกัดต่อไม้</small><div class="big" style="font-size:17px">ไม่เกิน ${n(x.riskPct / 100 * x.start)} ต่อไม้ · ${x.capContracts} สัญญา</div><div class="sub">ค่าคอม ${x.commissionRT > 0 ? n(x.commissionRT) + ' ต่อสัญญา (ไป-กลับ)' : 'ยังไม่ได้ตั้ง (EXAM_COMMISSION_RT)'}</div></div>`;
+}
 async function refresh() {
   try {
     const q = selSym ? '?sym=' + selSym : '';
     const [s, st, tr, sg, bp] = await Promise.all([api('/api/meta' + q), api('/api/stats'), api('/api/trades?limit=100'), api('/api/signals'), api('/api/bpe' + q)]);
     const ch = await api('/api/chart?sym=' + (selSym || s.symbol) + '&tf=' + chartTf).catch(() => null);
+    const ex = await api('/api/exam').catch(() => null);
     $('gate').hidden = true; $('app').hidden = false;
     if (!selSym) selSym = s.symbol;
     s.symbols.forEach(x => DG[x.sym] = x.digits);
     bp.symbols.forEach(x => DG[x.sym] = x.digits ?? DG[x.sym]);
     bp.symbols.forEach(x => DZ[x.sym] = x.kzf);
-    renderAccount(s, st); renderBoard(s, bp, s.utc); renderChart(tr.equity, s.startBalance); if (ch) renderPrice(ch);
+    renderAccount(s, st); renderExam(ex); renderBoard(s, bp, s.utc); renderChart(tr.equity, s.startBalance); if (ch) renderPrice(ch);
     if (bp.enabled) renderFocus(bp, s); else $('focus').innerHTML = '<div class="empty">ตัวสร้างสัญญาณปิดอยู่ (BPE_ENABLED=0)</div>';
     renderOpen(s); renderTrades(tr, st); renderSignals(sg);
     const anyErr = bp.symbols.find(x => x.feed && x.feed.lastError), stale = s.barAge < 0 || s.barAge > 900;
