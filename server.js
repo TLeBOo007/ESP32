@@ -260,7 +260,7 @@ function metaView(inst) {
     takenToday: meta.takenToday, positions: st.positions, orders: st.orders, tradeCount: allTrades().length,
     pending: meta.signals.filter(s => s.status === 'new').length, equityTail: allEquity().slice(-30).map(e => e[1]),
     kz: { asia: !!inst.bpe.kzA, london: !!inst.bpe.kzL, nyam: !!inst.bpe.kzAM, nypm: !!inst.bpe.kzPM, waitEquityOpen: !!cf.waitEquityOpen },
-    symbols: [...insts.values()].map(i => ({ sym: i.sym, digits: i.cfg.digits, bid: i.engine.quote.bid, ask: i.engine.quote.ask, lastBarT: i.engine.lastBarT, open: i.engine.positions.length, pend: i.engine.orders.length })),
+    symbols: [...insts.values()].map(i => ({ sym: i.sym, digits: i.cfg.digits, mult: i.engine.mult, bid: i.engine.quote.bid, ask: i.engine.quote.ask, lastBarT: i.engine.lastBarT, open: i.engine.positions.length, pend: i.engine.orders.length, bias: i.bpe.bias, kz: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, waitEquityOpen: !!i.bpe.c.waitEquityOpen } })),
     openAll: allPositions().length + allOrders().length, positionsAll: allPositions(), ordersAll: allOrders(),
   };
 }
@@ -313,7 +313,7 @@ const handlers = {
   'POST /api/cancel': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.cancel(Number(b.id)); flush(inst); return r; },
   'POST /api/amend': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.amend(Number(b.id), Number(b.sl), Number(b.tp)); save(); return r; },
   'POST /api/close': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.close(Number(b.id), Number(b.price), Number(b.t), Number(b.volume), b.reason || 'time'); flush(inst); return r; },
-  'GET /api/bpe': (_b, url) => ({ ...symStatus(symOf(null, url)), symbols: [...insts.values()].map(i => { const x = symStatus(i); return { sym: i.sym, kz: x.kz, bias: x.bias, state: x.state, last: x.last, ny: x.ny, feed: x.feed, bars: x.bars }; }) }),
+  'GET /api/bpe': (_b, url) => ({ ...symStatus(symOf(null, url)), symbols: [...insts.values()].map(i => { const x = symStatus(i); return { sym: i.sym, kz: x.kz, bias: x.bias, biasH4: x.biasH4, biasD1: x.biasD1, state: x.state, last: x.last, ny: x.ny, feed: x.feed, bars: x.bars, kzf: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, wait: !!i.bpe.c.waitEquityOpen }, digits: i.cfg.digits }; }) }),
   'POST /api/notify-test': async () => ({ line: await pushLine('[PAPER] ทดสอบแจ้งเตือน LINE จาก BPE Paper Server'), telegram: !!(TG_TOKEN && TG_CHAT) }),
   'POST /api/test/now': b => { if (process.env.TEST_MODE !== '1') return { error: 'NOT_ENABLED' }; testNow = Number(b.utc) || 0; return { ok: true }; },
   'POST /api/test/failack': b => { if (process.env.TEST_MODE !== '1') return { error: 'NOT_ENABLED' }; failAck = Number(b.n) || 0; return { ok: true }; },

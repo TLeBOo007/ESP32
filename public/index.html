@@ -4,129 +4,387 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BPE Paper Desk</title>
+<meta name="theme-color" content="#0d1b2a">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#f5f6f8; --card:#fff; --fg:#1b2129; --mut:#667282; --line:#dde2e8; --up:#13795b; --dn:#b3261e; --acc:#2563eb; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#12161b; --card:#1a2027; --fg:#e6ebf1; --mut:#93a0ae; --line:#2b333d; --up:#3ccf9a; --dn:#ff7b72; --acc:#6ea0ff; } }
+  /* Palette: harbour-night blue, one colour per trading session (the board's real vocabulary), green/red only for money. */
+  :root {
+    --bg:#eef2f6; --panel:#ffffff; --ink:#0f1e2e; --mut:#5d6f82; --faint:#8a99a9; --rule:#d7dfe8; --wash:#e5ebf2;
+    --up:#0e8a62; --dn:#c73d4a; --now:#d9480f;
+    --asia:#7461e6; --london:#1b8fc4; --nyam:#e08a00; --nypm:#d9554a;
+    --sel:#0f1e2e; --selink:#ffffff;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg:#0b1520; --panel:#111f2d; --ink:#e8eff6; --mut:#92a4b6; --faint:#667a8e; --rule:#223446; --wash:#172a3b;
+    --up:#34c997; --dn:#ff6b78; --now:#ffb454;
+    --asia:#9a8cff; --london:#4cc0f0; --nyam:#ffb020; --nypm:#ff7a6b;
+    --sel:#e8eff6; --selink:#0b1520;
+  } }
+  :root[data-theme="dark"] {
+    --bg:#0b1520; --panel:#111f2d; --ink:#e8eff6; --mut:#92a4b6; --faint:#667a8e; --rule:#223446; --wash:#172a3b;
+    --up:#34c997; --dn:#ff6b78; --now:#ffb454;
+    --asia:#9a8cff; --london:#4cc0f0; --nyam:#ffb020; --nypm:#ff7a6b;
+    --sel:#e8eff6; --selink:#0b1520;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, "Noto Sans Thai", sans-serif; }
-  main { max-width:960px; margin:0 auto; padding:16px; }
-  h1 { font-size:20px; margin:4px 0 12px; display:flex; justify-content:space-between; align-items:baseline; gap:8px; flex-wrap:wrap; }
-  h1 small { font-weight:400; color:var(--mut); font-size:13px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
-  .k { color:var(--mut); font-size:12px; } .v { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
-  .up { color:var(--up); } .dn { color:var(--dn); }
-  h2 { font-size:15px; margin:0 0 8px; }
-  table { width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
-  th, td { text-align:left; padding:6px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
-  th { color:var(--mut); font-weight:500; }
-  .scroll { overflow-x:auto; }
-  .empty { color:var(--mut); padding:6px 0; }
-  #gate { max-width:360px; margin:60px auto; }
-  input { width:100%; padding:9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
-  button { margin-top:10px; padding:9px 14px; border:0; border-radius:6px; background:var(--acc); color:#fff; font:inherit; cursor:pointer; }
-  svg { width:100%; height:180px; display:block; }
-  .tabs button { margin:0 6px 6px 0; padding:5px 10px; background:var(--card); color:var(--fg); border:1px solid var(--line); font-size:13px; }
-  .tabs button.on { background:var(--acc); color:#fff; border-color:var(--acc); }
-  #err { color:var(--dn); font-size:13px; min-height:18px; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:400 15px/1.55 "IBM Plex Sans Thai","IBM Plex Sans","Noto Sans Thai",system-ui,sans-serif; font-variant-numeric:tabular-nums; }
+  a { color:inherit; }
+  button { font:inherit; color:inherit; }
+  :focus-visible { outline:2px solid var(--london); outline-offset:2px; border-radius:4px; }
+  .wrap { max-width:1180px; margin:0 auto; padding:0 20px 56px; }
+  .up { color:var(--up); } .dn { color:var(--dn); } .mut { color:var(--mut); }
+  .num { font-variant-numeric:tabular-nums; }
+
+  /* top bar */
+  .top { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 0 14px; }
+  .brand { display:flex; align-items:baseline; gap:10px; }
+  .brand b { font-weight:600; font-size:18px; letter-spacing:.01em; }
+  .brand span { color:var(--mut); font-size:13px; }
+  .tools { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--mut); }
+  .pill { display:inline-flex; align-items:center; gap:7px; padding:4px 11px; border:1px solid var(--rule); border-radius:999px; background:var(--panel); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--faint); flex:none; }
+  .dot.ok { background:var(--up); } .dot.bad { background:var(--dn); }
+  .icon { width:34px; height:34px; display:grid; place-items:center; border:1px solid var(--rule); border-radius:50%; background:var(--panel); cursor:pointer; }
+
+  /* account line */
+  .account { display:grid; grid-template-columns:minmax(330px,1.9fr) repeat(4,minmax(0,1fr)); gap:0 24px; align-items:end; padding:10px 0 26px; border-bottom:1px solid var(--rule); }
+  .bal .k { color:var(--mut); font-size:13px; }
+  .bal .v { font-size:clamp(38px,5vw,56px); font-weight:300; line-height:1.02; letter-spacing:-.02em; }
+  .bal .d { font-size:15px; font-weight:500; margin-top:4px; }
+  .stat .k { color:var(--mut); font-size:13px; }
+  .stat .v { font-size:22px; font-weight:500; }
+  .stat .s { color:var(--faint); font-size:12px; }
+
+  section { padding-top:30px; }
+  .head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+  h2 { margin:0; font-size:17px; font-weight:600; }
+  .note { color:var(--mut); font-size:13px; }
+
+  /* session board: the one memorable thing */
+  .board { background:var(--panel); border:1px solid var(--rule); border-radius:14px; padding:18px 18px 10px; position:relative; }
+  .axis { display:grid; grid-template-columns:128px 1fr 74px; align-items:end; margin-bottom:6px; }
+  .ticks { position:relative; height:20px; color:var(--faint); font-size:11.5px; }
+  .ticks i { position:absolute; transform:translateX(-50%); font-style:normal; }
+  .rows { position:relative; }
+  .row { display:grid; grid-template-columns:128px 1fr 74px; align-items:center; min-height:50px; border-top:1px solid var(--rule); cursor:pointer; background:none; border-left:0; border-right:0; border-bottom:0; width:100%; text-align:left; padding:0; }
+  .row:hover .nm { text-decoration:underline; text-decoration-color:var(--rule); text-underline-offset:3px; }
+  .row.sel .nm::after { content:""; display:block; height:2px; background:var(--ink); margin-top:2px; width:28px; border-radius:2px; }
+  .nm { font-weight:600; font-size:15px; line-height:1.15; }
+  .nm small { display:block; font-weight:400; color:var(--mut); font-size:12.5px; margin-top:2px; }
+  .track { position:relative; height:50px; }
+  .track::before { content:""; position:absolute; left:0; right:0; top:50%; height:1px; background:var(--rule); }
+  .win { position:absolute; top:15px; height:20px; border-radius:6px; background:var(--c); opacity:.88; transform-origin:left center; animation:grow .7s cubic-bezier(.2,.7,.2,1) both; animation-delay:var(--d,0s); }
+  .win.live { opacity:1; box-shadow:0 0 0 3px color-mix(in srgb, var(--c) 28%, transparent); }
+  .ld { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--c); margin-right:6px; box-shadow:0 0 0 3px color-mix(in srgb, var(--c) 30%, transparent); }
+  .bias { text-align:right; font-weight:600; font-size:13px; }
+  .bias small { display:block; font-weight:400; color:var(--mut); font-size:11.5px; }
+  .grid-lines { position:absolute; inset:0 74px 0 128px; pointer-events:none; }
+  .grid-lines i { position:absolute; top:0; bottom:0; width:1px; background:var(--rule); opacity:.55; }
+  .needle { position:absolute; top:-6px; bottom:0; width:2px; background:var(--now); border-radius:2px; pointer-events:none; }
+  .needle b { position:absolute; top:-22px; left:50%; transform:translateX(-50%); background:var(--now); color:var(--bg); font-size:11.5px; font-weight:600; padding:1px 7px; border-radius:6px; white-space:nowrap; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; padding:10px 0 4px; border-top:1px solid var(--rule); color:var(--mut); font-size:12.5px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .legend i { width:12px; height:12px; border-radius:4px; background:var(--c); display:inline-block; }
+  .closed-note { margin:0 0 10px; padding:8px 12px; border-radius:8px; background:var(--wash); color:var(--mut); font-size:13px; }
+  @keyframes grow { from { transform:scaleX(0); opacity:0; } }
+
+  /* two columns */
+  .two { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(0,1fr); gap:34px; }
+  .chart { width:100%; height:230px; display:block; }
+  .chart text { fill:var(--faint); font-size:11px; font-family:inherit; }
+  .focus h3 { margin:0 0 2px; font-size:22px; font-weight:500; }
+  .focus .px { font-size:15px; color:var(--mut); }
+  dl.kv { margin:12px 0 0; display:grid; grid-template-columns:96px 1fr; gap:7px 12px; font-size:14px; }
+  dl.kv dt { color:var(--mut); } dl.kv dd { margin:0; }
+  .chip { display:inline-block; padding:1px 8px; border-radius:6px; background:var(--wash); font-size:12.5px; margin:0 4px 4px 0; }
+  ol.events { list-style:none; margin:12px 0 0; padding:0; border-left:2px solid var(--rule); }
+  ol.events li { padding:0 0 8px 12px; font-size:13px; position:relative; }
+  ol.events li::before { content:""; position:absolute; left:-6px; top:7px; width:8px; height:8px; border-radius:50%; background:var(--faint); }
+  ol.events li.go::before { background:var(--up); }
+  ol.events li time { color:var(--mut); margin-right:6px; }
+
+  /* open positions */
+  .pos { display:grid; grid-template-columns:repeat(auto-fill,minmax(310px,1fr)); gap:16px; }
+  .p { background:var(--panel); border:1px solid var(--rule); border-radius:14px; padding:14px 16px; }
+  .p .t { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .p .t b { font-size:16px; }
+  .tag { font-size:12.5px; font-weight:600; padding:1px 8px; border-radius:6px; background:var(--wash); }
+  .tag.buy { color:var(--up); } .tag.sell { color:var(--dn); }
+  .ladder { position:relative; height:10px; border-radius:6px; margin:16px 0 8px; background:linear-gradient(90deg,var(--l),var(--r)); }
+  .ladder i { position:absolute; top:-4px; width:2px; height:18px; background:var(--ink); border-radius:2px; opacity:.7; }
+  .ladder em { position:absolute; top:-5px; width:16px; height:16px; border-radius:50%; background:var(--panel); border:3px solid var(--ink); transform:translateX(-50%); }
+  .ends { display:flex; justify-content:space-between; font-size:12.5px; color:var(--mut); }
+  .p .m { margin-top:8px; font-size:13px; color:var(--mut); display:flex; justify-content:space-between; gap:8px; }
+  .empty { color:var(--mut); padding:14px 0; font-size:14px; }
+
+  /* tables */
+  .tw { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; color:var(--mut); font-weight:500; font-size:12.5px; padding:6px 10px 8px 0; border-bottom:1px solid var(--rule); white-space:nowrap; }
+  td { padding:10px 10px 10px 0; border-bottom:1px solid var(--rule); white-space:nowrap; vertical-align:top; }
+  td.r, th.r { text-align:right; padding-right:0; }
+  tr.tr { cursor:pointer; } tr.tr:hover td { background:var(--wash); }
+  tr.det td { white-space:normal; background:var(--wash); padding:16px 18px; }
+  .why { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+  .why h4 { margin:0 0 6px; font-size:14px; }
+  .why pre { margin:0; white-space:pre-wrap; font:inherit; font-size:13.5px; line-height:1.6; }
+  .why .stats { margin-top:10px; }
+  .bysym { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:0 28px; margin-bottom:16px; }
+  .bysym div { white-space:nowrap; padding:8px 0; border-bottom:1px solid var(--rule); display:flex; justify-content:space-between; gap:10px; font-size:14px; }
+
+  /* gate */
+  #gate { max-width:380px; margin:12vh auto 0; padding:0 20px; }
+  #gate h1 { font-size:26px; font-weight:500; margin:0 0 6px; }
+  #gate p { color:var(--mut); margin:0 0 16px; font-size:14px; }
+  #gate input { width:100%; padding:11px 12px; border:1px solid var(--rule); border-radius:10px; background:var(--panel); color:var(--ink); font:inherit; }
+  #gate button { margin-top:12px; padding:10px 18px; border:0; border-radius:10px; background:var(--sel); color:var(--selink); cursor:pointer; font-weight:500; }
+  #err { color:var(--dn); font-size:13px; min-height:20px; margin-top:8px; }
+
+  @media (max-width:900px) {
+    .account { grid-template-columns:1fr 1fr; gap:18px 20px; } .bal { grid-column:1 / -1; }
+    .two { grid-template-columns:1fr; gap:30px; }
+    .why { grid-template-columns:1fr; }
+  }
+  @media (max-width:620px) {
+    .wrap { padding:0 14px 44px; }
+    .axis, .row { grid-template-columns:88px 1fr 48px; } .grid-lines { inset:0 48px 0 88px; }
+    .nm small { display:none; } .bias small { display:none; }
+    .board { padding:16px 12px 8px; } .brand span { display:none; }
+  }
+  @media (prefers-reduced-motion:reduce) { .win { animation:none; } }
 </style>
 </head>
 <body>
-<main id="gate" hidden>
+<div id="gate" hidden>
   <h1>BPE Paper Desk</h1>
-  <p class="k">ใส่ API Key (ค่าเดียวกับ API_KEY ที่ตั้งใน Railway) เก็บไว้ในเบราว์เซอร์นี้เท่านั้น</p>
-  <input id="key" type="password" autocomplete="off"><button id="ok">เข้าดู</button>
-  <p id="err"></p>
-</main>
-<main id="app" hidden>
-  <h1>BPE Paper Desk <small id="upd"></small></h1>
-  <div class="grid" id="tiles"></div>
-  <div class="card" style="margin-bottom:14px"><h2>ทุกสินทรัพย์</h2><div id="overview" class="scroll"></div></div>
-  <div class="card" style="margin-bottom:14px"><h2>ตัวสร้างสัญญาณ (BPE) <span id="symtabs" class="tabs" style="margin-left:8px"></span></h2><div id="bpe" class="scroll"></div></div>
-  <div class="card" style="margin-bottom:14px"><h2>ยอดเงินตามไม้ที่ปิด</h2><svg id="chart" viewBox="0 0 600 180" preserveAspectRatio="none"></svg></div>
-  <div class="card" style="margin-bottom:14px"><h2>ไม้ที่เปิดอยู่ / ออเดอร์รอ</h2><div class="scroll" id="open"></div></div>
-  <div class="card" style="margin-bottom:14px"><h2>สัญญาณจาก TradingView และการตัดสินใจของ ESP32</h2><div class="scroll" id="sigs"></div></div>
-  <div class="card"><h2>ไม้ที่ปิดแล้ว (ล่าสุดก่อน)</h2><div class="scroll" id="closed"></div></div>
-</main>
+  <p>ใส่ API Key ค่าเดียวกับ API_KEY ใน Railway ระบบจะจำไว้ในเบราว์เซอร์นี้เท่านั้น</p>
+  <input id="key" type="password" autocomplete="off" aria-label="API Key">
+  <button id="ok">เข้าดู</button>
+  <div id="err" role="alert"></div>
+</div>
+
+<div class="wrap" id="app" hidden>
+  <header class="top">
+    <div class="brand"><b>BPE Paper Desk</b><span>Forward test · บัญชีจำลอง</span></div>
+    <div class="tools">
+      <span class="pill" id="status"><i class="dot"></i><span>กำลังเชื่อมต่อ</span></span>
+      <button class="icon" id="theme" aria-label="สลับโหมดสว่าง/มืด" title="สลับโหมดสว่าง/มืด"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 1.8a6.2 6.2 0 0 1 0 12.4z" fill="currentColor"/></svg></button>
+    </div>
+  </header>
+
+  <div class="account" id="account"></div>
+
+  <section>
+    <div class="head"><h2>ช่วงเวลาเทรดของแต่ละสินทรัพย์</h2><span class="note" id="boardnote"></span></div>
+    <div class="board" id="board"></div>
+  </section>
+
+  <section class="two">
+    <div>
+      <div class="head"><h2>ยอดเงินตามไม้ที่ปิด</h2><span class="note" id="eqnote"></span></div>
+      <svg class="chart" id="chart" role="img" aria-label="กราฟยอดเงิน"></svg>
+    </div>
+    <div class="focus" id="focus"></div>
+  </section>
+
+  <section>
+    <div class="head"><h2>ไม้ที่เปิดอยู่</h2><span class="note">รวมออเดอร์ limit ที่รอ</span></div>
+    <div id="open"></div>
+  </section>
+
+  <section>
+    <div class="head"><h2>ประวัติไม้</h2><span class="note">กดแถวเพื่อดูว่าทำไมเข้าและทำไมออก</span></div>
+    <div class="bysym" id="bysym"></div>
+    <div class="tw" id="closed"></div>
+  </section>
+
+  <section>
+    <div class="head"><h2>สัญญาณและการตัดสินใจของ ESP32</h2></div>
+    <div class="tw" id="sigs"></div>
+  </section>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
-const KEY = 'bpe_paper_key';
-let selSym = '', DG = {};
-const px = (x, sym) => (x === null || x === undefined || x === 0) ? '-' : fmt(x, DG[sym] ?? 2);
+const KEY = 'bpe_paper_key', TH = 'bpe_paper_theme';
 let key = ''; try { key = localStorage.getItem(KEY) || ''; } catch (e) {}
-const SM = 7 * 3600;
-const ny = t => t ? new Date((t - SM) * 1000).toISOString().slice(5, 16).replace('T', ' ') : '-';
-const side = s => s === 1 ? 'BUY' : 'SELL';
+try { const t = localStorage.getItem(TH); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+let selSym = '', DG = {}, TRADES = {}, openId = null, drew = false;
+
+const SESS = {
+  asia:   { name: 'Asia',     c: 'var(--asia)',   s: 1140, e: 1320 },
+  london: { name: 'London',   c: 'var(--london)', s: 120,  e: 300 },
+  nyam:   { name: 'NY AM',    c: 'var(--nyam)',   s: 570,  e: 660 },
+  nypm:   { name: 'NY PM',    c: 'var(--nypm)',   s: 810,  e: 960 },
+};
+const START = 1020;                       // the axis starts at 17:00 New York (the broker's midnight)
+const pos = m => (((m - START) % 1440) + 1440) % 1440 / 1440 * 100;
+const fmt = (x, n = 2) => (x === null || x === undefined || isNaN(x)) ? '-' : Number(x).toLocaleString('en-US', { minimumFractionDigits: n, maximumFractionDigits: n });
+const signed = (x, n = 2) => (x > 0 ? '+' : '') + fmt(x, n);
 const cls = x => x > 0 ? 'up' : x < 0 ? 'dn' : '';
-const fmt = (x, n = 2) => (x === null || x === undefined) ? '-' : Number(x).toLocaleString('en-US', { minimumFractionDigits: n, maximumFractionDigits: n });
+const px = (x, s) => (!x ? '-' : fmt(x, DG[s] ?? 2));
+const esc = x => String(x == null ? '' : x).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const SM = 7 * 3600;
+const nyStr = t => t ? new Date((t - SM) * 1000).toISOString().slice(5, 16).replace('T', ' ') : '-';
+const sideName = s => s === 1 ? 'BUY' : 'SELL';
+
+function nyNow(utc) {
+  const p = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(utc * 1000));
+  const g = k => p.find(x => x.type === k).value;
+  const h = Number(g('hour')) % 24, m = Number(g('minute')), wd = g('weekday');
+  return { min: h * 60 + m, label: String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'), wd };
+}
+function marketClosed(n) { return n.wd === 'Sat' || (n.wd === 'Fri' && n.min >= 1020) || (n.wd === 'Sun' && n.min < 1020); }
+
 async function api(p) {
   const r = await fetch(p, { headers: { 'x-api-key': key } });
   if (r.status === 401) throw new Error('BAD_KEY');
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
-function table(head, rows) {
-  if (!rows.length) return '<div class="empty">ยังไม่มี</div>';
-  return '<table><thead><tr>' + head.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' + rows.map(r => '<tr>' + r.map(c => '<td>' + c + '</td>').join('') + '</tr>').join('') + '</tbody></table>';
+
+function windows(kzf) {
+  const w = [];
+  if (kzf.asia) w.push(['asia', SESS.asia.s, SESS.asia.e]);
+  if (kzf.london) w.push(['london', SESS.london.s, SESS.london.e]);
+  if (kzf.nyam) w.push(['nyam', kzf.wait ? 570 : 510, 660]);
+  if (kzf.nypm) w.push(['nypm', SESS.nypm.s, SESS.nypm.e]);
+  return w;
 }
-function chart(eq, start) {
+const inWin = (m, w) => m >= w[1] && m < w[2];
+const biasTxt = b => b === 'BULL' ? ['▲ ขึ้น', 'up'] : b === 'BEAR' ? ['▼ ลง', 'dn'] : ['– ยังไม่ชัด', 'mut'];
+
+function renderAccount(s, st) {
+  const pnl = s.balance - s.startBalance, pf = st.profitFactor === null ? '∞' : fmt(st.profitFactor);
+  $('account').innerHTML = `
+    <div class="bal"><div class="k">ยอดเงิน</div><div class="v">${fmt(s.balance)}</div><div class="d ${cls(pnl)}">${signed(pnl)} จากยอดตั้งต้น ${fmt(s.startBalance, 0)}</div></div>
+    <div class="stat"><div class="k">วันนี้</div><div class="v ${cls(s.todayPnl)}">${signed(s.todayPnl)}</div><div class="s">เข้าแล้ว ${s.takenToday} ไม้</div></div>
+    <div class="stat"><div class="k">รวม R</div><div class="v ${cls(st.sumR)}">${signed(st.sumR)}</div><div class="s">${st.trades} ไม้ · ชนะ ${st.winRate}%</div></div>
+    <div class="stat"><div class="k">Profit factor</div><div class="v">${pf}</div><div class="s">เงินที่ได้ ÷ เงินที่เสีย</div></div>
+    <div class="stat"><div class="k">Drawdown สูงสุด</div><div class="v dn">${fmt(st.maxDrawdown)}</div><div class="s">Equity ${fmt(s.equity)}</div></div>`;
+}
+
+function renderBoard(s, bp, utc) {
+  const n = nyNow(utc), closed = marketClosed(n);
+  const nl = pos(n.min);
+  const ticks = [17, 20, 23, 2, 5, 8, 11, 14, 17].map((h, i) => Math.abs(i * 12.5 - nl) < 5.5 ? '' : `<i style="left:${i * 12.5}%">${String(h).padStart(2, '0')}</i>`).join('');
+  const lines = [0, 12.5, 25, 37.5, 50, 62.5, 75, 87.5, 100].map(x => `<i style="left:${x}%"></i>`).join('');
+  const bars = bp.symbols.map((x, ri) => {
+    const m = s.symbols.find(y => y.sym === x.sym) || {};
+    const ws = windows(x.kzf), live = ws.find(w => inWin(n.min, w));
+    const b = biasTxt(x.bias);
+    const win = ws.map((w, i) => `<div class="win${live === w && !closed ? ' live' : ''}" title="${SESS[w[0]].name} ${Math.floor(w[1] / 60)}:${String(w[1] % 60).padStart(2, '0')}–${Math.floor(w[2] / 60)}:${String(w[2] % 60).padStart(2, '0')} เวลานิวยอร์ก" style="--c:${SESS[w[0]].c};left:${pos(w[1])}%;width:${(w[2] - w[1]) / 14.4}%;--d:${(ri * 0.06 + i * 0.05).toFixed(2)}s"></div>`).join('');
+    const dotc = live && !closed ? `<i class="ld" style="--c:${SESS[live[0]].c}" title="${SESS[live[0]].name} อยู่ในช่วงเทรดตอนนี้"></i>` : '';
+    return `<button class="row${x.sym === selSym ? ' sel' : ''}" data-sym="${x.sym}" aria-label="${x.sym}"><div class="nm">${dotc}${x.sym}<small>${px(m.bid, x.sym)}</small></div><div class="track">${win}</div><div class="bias ${b[1]}">${b[0]}<small>H4 ${x.biasH4 || '-'}</small></div></button>`;
+  }).join('');
+  const left = pos(n.min);
+  $('board').innerHTML = `${closed ? '<p class="closed-note">ตลาดฟอเร็กซ์/ดัชนีปิดช่วงสุดสัปดาห์ จะกลับมาเปิดคืนวันอาทิตย์ 17:00 เวลานิวยอร์ก</p>' : ''}
+    <div class="axis"><span></span><div class="ticks">${ticks}</div><span></span></div>
+    <div class="rows"><div class="grid-lines">${lines}</div>${bars}
+      <div style="position:absolute;inset:0 74px 0 128px;pointer-events:none" class="nw"><div class="needle" style="left:${left}%"><b>${n.label} NY</b></div></div></div>
+    <div class="legend">${Object.values(SESS).map(x => `<span style="--c:${x.c}"><i></i>${x.name}</span>`).join('')}<span>แกนเวลา = นิวยอร์ก เริ่ม 17:00 · แถบสีคือช่วงที่ระบบหาจังหวะเข้า</span></div>`;
+  $('boardnote').textContent = 'ตอนนี้ ' + n.label + ' ที่นิวยอร์ก' + (closed ? ' · ตลาดปิด' : '');
+  document.querySelectorAll('#board .row').forEach(b => b.onclick = () => { selSym = b.dataset.sym; refresh(); });
+}
+
+function renderChart(eq, start) {
+  const svg = $('chart'), W = svg.clientWidth || 640, H = 230, pl = 8, pr = 8, pt = 14, pb = 22;
   const pts = [[0, start]].concat(eq.map(e => [e[0], e[1]]));
-  const ys = pts.map(p => p[1]); let lo = Math.min(...ys), hi = Math.max(...ys); if (hi - lo < 1) { hi += 1; lo -= 1; }
-  const x = i => pts.length < 2 ? 300 : 10 + (580 * i) / (pts.length - 1), y = v => 170 - ((v - lo) / (hi - lo)) * 160;
-  const line = pts.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p[1]).toFixed(1)).join(' ');
-  const base = y(start).toFixed(1);
-  $('chart').innerHTML = `<line x1="0" x2="600" y1="${base}" y2="${base}" stroke="currentColor" opacity=".25" stroke-dasharray="4 4"/><path d="${line}" fill="none" stroke="var(--acc)" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  const ys = pts.map(p => p[1]); let lo = Math.min(...ys), hi = Math.max(...ys); const pad = Math.max((hi - lo) * 0.18, start * 0.002, 1); lo -= pad; hi += pad;
+  const X = i => pts.length < 2 ? W / 2 : pl + (W - pl - pr) * i / (pts.length - 1), Y = v => pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo));
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  if (pts.length < 2) { svg.innerHTML = `<line x1="${pl}" x2="${W - pr}" y1="${Y(start)}" y2="${Y(start)}" stroke="var(--rule)" stroke-dasharray="4 5"/><text x="${W / 2}" y="${H / 2}" text-anchor="middle">ยังไม่มีไม้ที่ปิด ยอดเงินจะเริ่มเป็นเส้นเมื่อมีไม้แรก</text>`; $('eqnote').textContent = ''; return; }
+  const d = pts.map((p, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ');
+  const last = pts[pts.length - 1][1], col = last >= start ? 'var(--up)' : 'var(--dn)';
+  const dots = pts.slice(1).map((p, i) => { const up = p[1] >= pts[i][1]; return `<circle cx="${X(i + 1).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="3.5" fill="${up ? 'var(--up)' : 'var(--dn)'}" stroke="var(--bg)" stroke-width="1.5"><title>${signed(p[1] - pts[i][1])} → ${fmt(p[1])}</title></circle>`; }).join('');
+  svg.innerHTML = `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".22"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+    <line x1="${pl}" x2="${W - pr}" y1="${Y(start).toFixed(1)}" y2="${Y(start).toFixed(1)}" stroke="var(--rule)" stroke-dasharray="4 5"/>
+    <path d="${d} L${X(pts.length - 1).toFixed(1)} ${H - pb} L${X(0)} ${H - pb} Z" fill="url(#g)"/>
+    <path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>${dots}
+    <text x="${pl}" y="${H - 5}">ตั้งต้น ${fmt(start, 0)}</text><text x="${W - pr}" y="${H - 5}" text-anchor="end">ล่าสุด ${fmt(last)}</text>`;
+  $('eqnote').textContent = (eq.length) + ' ไม้';
 }
+
+function renderFocus(bp, s) {
+  const m = s.symbols.find(y => y.sym === bp.sym) || {}, b = biasTxt(bp.bias);
+  const poi = bp.poi.length ? bp.poi.map(p => `<span class="chip">${esc(p.type)} ${px(p.bot, bp.sym)}–${px(p.top, bp.sym)}</span>`).join('') : '<span class="mut">ยังไม่มี</span>';
+  const f = bp.feed || {}, feedTxt = f.kind === 'none' ? 'ไม่ได้ตั้งค่า (รอแท่งจาก /tv หรือ MT4)' : f.lastError ? `<span class="dn">ผิดพลาด: ${esc(f.lastError)}</span>` : (f.lastPollT ? 'ดึงล่าสุด ' + new Date(f.lastPollT * 1000).toLocaleTimeString('th-TH') : 'รอดึงครั้งแรก');
+  const warm = bp.bars.d1 < 12 ? `<div class="note" style="margin-top:8px">ข้อมูลรายวันยังไม่ครบ 12 วัน ทิศทางจะว่างไปก่อน</div>` : '';
+  const ev = bp.log.slice().reverse().slice(0, 8).map(e => `<li class="${/placed|entry/.test(e.evt) ? 'go' : ''}"><time>${esc(e.ny)}</time><b>${esc(e.evt)}</b> ${e.side !== '-' ? esc(e.side) : ''} <span class="mut">${esc(e.det || '')}</span></li>`).join('');
+  $('focus').innerHTML = `<div class="head"><h2>${bp.sym}</h2><span class="note">${esc(bp.kz)}</span></div>
+    <h3 class="${b[1]}">${b[0]}</h3><div class="px">ราคา ${px(m.bid, bp.sym)}</div>
+    <dl class="kv"><dt>สถานะ</dt><dd>${esc(bp.state)}</dd><dt>Bias</dt><dd>H4 ${bp.biasH4} · D1 ${bp.biasD1}</dd><dt>POI</dt><dd>${poi}</dd><dt>สัญญาณล่าสุด</dt><dd>${esc(bp.last)}</dd><dt>แหล่งราคา</dt><dd>${esc(f.symbol || '')} ${feedTxt}</dd><dt>แท่งที่เก็บ</dt><dd>M5 ${bp.bars.m5} · H4 ${bp.bars.h4} · D1 ${bp.bars.d1}</dd></dl>${warm}
+    ${ev ? `<ol class="events">${ev}</ol>` : '<div class="empty">ยังไม่มีเหตุการณ์ของสินทรัพย์นี้</div>'}`;
+}
+
+function renderOpen(s) {
+  const items = s.positionsAll.map(p => ({ ...p, kind: 'pos' })).concat(s.ordersAll.map(o => ({ ...o, kind: 'ord', open: o.price })));
+  if (!items.length) { $('open').innerHTML = '<div class="empty">ตอนนี้ไม่มีไม้เปิดและไม่มีออเดอร์รอ ระบบกำลังรอสัญญาณใหม่</div>'; return; }
+  $('open').innerHTML = '<div class="pos">' + items.map(p => {
+    const m = s.symbols.find(y => y.sym === p.sym) || {}, price = m.bid || p.open, lo = Math.min(p.sl, p.tp), hi = Math.max(p.sl, p.tp), span = hi - lo || 1;
+    const at = v => Math.max(0, Math.min(100, (v - lo) / span * 100));
+    const buy = p.side === 1, left = buy ? 'var(--dn)' : 'var(--up)', right = buy ? 'var(--up)' : 'var(--dn)';
+    const risk = Math.abs(p.open - p.sl) || 1, r = ((buy ? price - p.open : p.open - price) / risk);
+    return `<div class="p"><div class="t"><b>${p.sym}</b><span><span class="tag ${buy ? 'buy' : 'sell'}">${sideName(p.side)}</span> ${p.kind === 'ord' ? '<span class="tag">รอ limit</span>' : ''}</span></div>
+      <div class="ladder" style="--l:color-mix(in srgb,${left} 55%,var(--wash));--r:color-mix(in srgb,${right} 55%,var(--wash))"><i style="left:${at(p.open)}%"></i>${p.kind === 'pos' ? `<em style="left:${at(price)}%"></em>` : ''}</div>
+      <div class="ends"><span>${buy ? 'SL' : 'TP'} ${px(lo, p.sym)}</span><span>เข้า ${px(p.open, p.sym)}</span><span>${buy ? 'TP' : 'SL'} ${px(hi, p.sym)}</span></div>
+      <div class="m"><span>${p.volume / 100} lot · ${esc(p.comment || '')}</span>${p.kind === 'pos' ? `<span class="${cls(r)}">${signed(r)} R</span>` : '<span>ยังไม่เข้า</span>'}</div></div>`;
+  }).join('') + '</div>';
+}
+
+function renderTrades(tr, st) {
+  TRADES = {}; tr.trades.forEach(t => TRADES[t.id] = t);
+  $('bysym').innerHTML = (st.bySymbol || []).filter(b => b.trades).map(b => `<div><b>${b.sym}</b><span class="${cls(b.netPnl)}">${signed(b.netPnl)} · ${b.trades} ไม้ · ${b.winRate}%</span></div>`).join('');
+  if (!tr.trades.length) { $('closed').innerHTML = '<div class="empty">ยังไม่มีไม้ที่ปิด Forward test เริ่มบันทึกทันทีที่มีไม้แรก</div>'; return; }
+  const rows = tr.trades.slice().reverse().map(t => {
+    const w = t.why, open = openId === t.id;
+    const detail = open ? `<tr class="det"><td colspan="8"><div class="why"><div><h4>ทำไมถึงเข้า</h4><pre>${esc(w ? w.text : 'ไม่มีข้อมูล ไม้นี้ไม่ได้มาจากตัวสร้างสัญญาณ BPE')}</pre>${w && w.chain ? `<div class="note" style="margin-top:8px">ลำดับเหตุการณ์<br>${esc(w.chain.join('\n')).replace(/\n/g, '<br>')}</div>` : ''}</div>
+      <div><h4>ทำไมถึงออก</h4><pre>${esc(t.exitWhy || '')}</pre><div class="stats"><span class="chip">ไปทางที่ถูกสูงสุด +${t.mfeR}R</span><span class="chip">สวนสูงสุด ${t.maeR}R</span><span class="chip">ถือ ${t.bars} แท่ง</span></div></div></div></td></tr>` : '';
+    return `<tr class="tr" data-id="${t.id}" tabindex="0"><td>${t.id}</td><td><b>${t.sym || ''}</b></td><td class="${t.side === 1 ? 'up' : 'dn'}">${sideName(t.side)}</td><td>${px(t.open, t.sym)} → ${px(t.close, t.sym)}</td><td>${esc(t.reason)}</td><td class="r ${cls(t.R)}">${signed(t.R)}R</td><td class="r ${cls(t.pnl)}">${signed(t.pnl)}</td><td class="r mut">${nyStr(t.closeT)}</td></tr>${detail}`;
+  }).join('');
+  $('closed').innerHTML = `<table><thead><tr><th>#</th><th>สินทรัพย์</th><th>ทิศ</th><th>เข้า → ออก</th><th>ออกเพราะ</th><th class="r">R</th><th class="r">กำไร/ขาดทุน</th><th class="r">ปิด (NY)</th></tr></thead><tbody>${rows}</tbody></table>`;
+  document.querySelectorAll('#closed tr.tr').forEach(r => { const f = () => { openId = openId === +r.dataset.id ? null : +r.dataset.id; renderTrades(tr, st); }; r.onclick = f; r.onkeydown = e => { if (e.key === 'Enter') f(); }; });
+}
+
+function renderSignals(sg) {
+  const stTxt = { new: 'รอ ESP32', taken: 'รับแล้ว', skipped: 'ข้าม' };
+  if (!sg.signals.length) { $('sigs').innerHTML = '<div class="empty">ยังไม่มีสัญญาณ ตัวสร้างสัญญาณจะส่งมาเมื่อราคาเข้าเงื่อนไขในช่วงเวลาเทรด</div>'; return; }
+  $('sigs').innerHTML = `<table><thead><tr><th>#</th><th>สินทรัพย์</th><th>คำสั่ง</th><th>ราคา</th><th>SL</th><th>TP</th><th>สถานะ</th><th>เหตุผล</th></tr></thead><tbody>${sg.signals.slice(0, 40).map(x =>
+    `<tr><td>${x.id}</td><td><b>${x.sym || ''}</b></td><td>${esc(x.action)}</td><td>${px(x.price, x.sym)}</td><td>${px(x.sl, x.sym)}</td><td>${px(x.tp, x.sym)}</td><td class="${x.status === 'taken' ? 'up' : x.status === 'skipped' ? 'dn' : ''}">${stTxt[x.status] || esc(x.status)}</td><td style="white-space:normal">${esc(x.reason || x.note || x.comment || '')}</td></tr>`).join('')}</tbody></table>`;
+}
+
 async function refresh() {
   try {
-    const [s, st, tr, sg, bp] = await Promise.all([api('/api/meta' + (selSym ? '?sym=' + selSym : '')), api('/api/stats'), api('/api/trades?limit=100'), api('/api/signals'), api('/api/bpe' + (selSym ? '?sym=' + selSym : ''))]);
-    if (!selSym) selSym = s.symbol; s.symbols.forEach(x => DG[x.sym] = x.digits);
+    const q = selSym ? '?sym=' + selSym : '';
+    const [s, st, tr, sg, bp] = await Promise.all([api('/api/meta' + q), api('/api/stats'), api('/api/trades?limit=100'), api('/api/signals'), api('/api/bpe' + q)]);
     $('gate').hidden = true; $('app').hidden = false;
-    const pnl = s.balance - s.startBalance;
-    $('tiles').innerHTML = [
-      ['ยอดเงิน', fmt(s.balance), ''], ['Equity', fmt(s.equity), cls(s.equity - s.balance)], ['กำไร/ขาดทุนรวม', fmt(pnl), cls(pnl)],
-      ['รวม R', fmt(st.sumR), cls(st.sumR)], ['จำนวนไม้', st.trades + ' (ชนะ ' + st.winRate + '%)', ''], ['Profit factor', st.profitFactor === null ? '∞' : fmt(st.profitFactor), ''],
-      ['Max drawdown', fmt(st.maxDrawdown), 'dn'], ['วันนี้', fmt(s.todayPnl) + ' · เข้า ' + s.takenToday + ' ไม้', cls(s.todayPnl)], ['ราคา ' + s.symbol, s.bid ? px(s.bid, s.symbol) : '-', ''], ['แท่งล่าสุดจาก TV', s.barAge < 0 ? 'ยังไม่เคยได้รับ' : (s.barAge < 60 ? s.barAge + ' วิ ที่แล้ว' : Math.round(s.barAge / 60) + ' นาทีที่แล้ว'), s.barAge < 0 || s.barAge > 900 ? 'dn' : ''],
-    ].map(t => `<div class="card"><div class="k">${t[0]}</div><div class="v ${t[2]}">${t[1]}</div></div>`).join('');
-    const op = s.positionsAll.map(p => [p.id, p.sym, side(p.side), 'ไม้เปิด', px(p.open, p.sym), px(p.sl, p.sym), px(p.tp, p.sym), p.volume / 100, ny(p.openT), p.comment || ''])
-      .concat(s.ordersAll.map(o => [o.id, o.sym, side(o.side), 'limit รอ', px(o.price, o.sym), px(o.sl, o.sym), px(o.tp, o.sym), o.volume / 100, ny(o.createdT), o.comment || '']));
-    $('open').innerHTML = table(['#', 'สินทรัพย์', 'ทิศ', 'สถานะ', 'ราคาเข้า', 'SL', 'TP', 'Vol', 'เวลา NY', 'หมายเหตุ'], op);
-    window.__tr = {}; tr.trades.forEach(t => window.__tr[t.id] = t);
-    const cl = tr.trades.slice().reverse().map(t => [`<a href="#" onclick="showTrade(${t.id});return false">${t.id}</a>`, t.sym || '', side(t.side), px(t.open, t.sym), px(t.close, t.sym), t.reason, `<span class="${cls(t.pnl)}">${fmt(t.pnl)}</span>`, `<span class="${cls(t.R)}">${fmt(t.R)}R</span>`, ny(t.openT), ny(t.closeT)]);
-    $('closed').innerHTML = '<div class="k">กดเลขไม้เพื่อดูเหตุผลเข้า/ออก</div><div id="tdetail"></div>' + table(['#', 'สินทรัพย์', 'ทิศ', 'เข้า', 'ออก', 'เหตุผล', 'P/L', 'R', 'เปิด NY', 'ปิด NY'], cl);
-    const stTxt = { new: 'รอ ESP32', taken: 'รับแล้ว', skipped: 'ข้าม' };
-    $('sigs').innerHTML = table(['#', 'สินทรัพย์', 'ทิศ/คำสั่ง', 'ราคา', 'SL', 'TP', 'สถานะ', 'เหตุผล / หมายเหตุ', 'หมายเหตุ TV'], sg.signals.map(x => [x.id, x.sym || '', x.action, px(x.price, x.sym), px(x.sl, x.sym), px(x.tp, x.sym), `<span class="${x.status === 'taken' ? 'up' : x.status === 'skipped' ? 'dn' : ''}">${stTxt[x.status] || x.status}</span>`, x.reason || x.note || '', x.comment || '']));
-    if (!bp.enabled) $('bpe').innerHTML = '<div class="empty">ปิดอยู่ (BPE_ENABLED=0) รับสัญญาณจาก TradingView อย่างเดียว</div>';
-    else {
-      const warm = bp.bars.d1 < 12 ? ' <span class="dn">(ประวัติ D1 ยังไม่พอ ทิศทางจะว่างจนกว่าจะมี 12 วัน นำเข้าราคาย้อนหลังด้วย /api/history)</span>' : '';
-      $('bpe').innerHTML = table(['รายการ', 'ค่า'], [
-        ['ช่วงเวลา', bp.kz + ' · เวลา NY ' + bp.ny], ['ทิศทาง (Bias)', bp.bias + ' (H4 ' + bp.biasH4 + ', D1 ' + bp.biasD1 + ')' + warm],
-        ['POI', bp.poi.length ? bp.poi.map(p => p.type + ' ' + px(p.bot, selSym) + '-' + px(p.top, selSym)).join(' · ') : '-'], ['สถานะ', bp.state], ['สัญญาณล่าสุด', bp.last],
-        ['แหล่งราคา', bp.feed.kind === 'none' ? 'ไม่ได้ตั้ง (รอแท่งจาก /tv หรือ MT4)' : bp.feed.kind + ' ' + bp.feed.symbol + (bp.feed.lastError ? ' <span class="dn">ผิดพลาด: ' + bp.feed.lastError + '</span>' : ' · ดึงล่าสุด ' + (bp.feed.lastPollT ? new Date(bp.feed.lastPollT * 1000).toLocaleTimeString() : '-') + (bp.feed.forwardStart ? ' · เริ่ม Forward ' + new Date(bp.feed.forwardStart * 1000).toLocaleString() : ''))],
-        ['จำนวนแท่งที่เก็บ', 'M5 ' + bp.bars.m5 + ' · H4 ' + bp.bars.h4 + ' · D1 ' + bp.bars.d1],
-      ]) + '<div class="k" style="margin-top:8px">เหตุการณ์ล่าสุด</div>' + table(['NY', 'เหตุการณ์', 'ทิศ', 'รายละเอียด'], bp.log.slice().reverse().map(e => [e.ny, e.evt, e.side, e.det]));
-    }
-    $('symtabs').innerHTML = s.symbols.map(x => `<button class="${x.sym === selSym ? 'on' : ''}" onclick="selSym='${x.sym}';refresh()">${x.sym}</button>`).join('');
-    const age = f => f && f.lastPollT ? Math.round((Date.now() / 1000 - f.lastPollT) / 60) + ' นาที' : '-';
-    $('overview').innerHTML = table(['สินทรัพย์', 'ช่วงเวลา', 'Bias', 'สถานะ', 'ราคา', 'ไม้/รอ', 'ดึงราคาล่าสุด', 'สัญญาณล่าสุด'], bp.symbols.map(x => {
-      const m = s.symbols.find(y => y.sym === x.sym) || {};
-      return [`<a href="#" onclick="selSym='${x.sym}';refresh();return false">${x.sym}</a>`, x.kz, x.bias, x.state, px(m.bid, x.sym), (m.open || 0) + '/' + (m.pend || 0), x.feed && x.feed.lastError ? '<span class="dn">' + x.feed.lastError + '</span>' : age(x.feed), x.last];
-    }));
-    chart(tr.equity, s.startBalance);
-    $('upd').textContent = 'แท่งล่าสุด ' + ny(s.lastBarT) + ' NY · อัปเดต ' + new Date().toLocaleTimeString();
+    if (!selSym) selSym = s.symbol;
+    s.symbols.forEach(x => DG[x.sym] = x.digits);
+    bp.symbols.forEach(x => DG[x.sym] = x.digits ?? DG[x.sym]);
+    renderAccount(s, st); renderBoard(s, bp, s.utc); renderChart(tr.equity, s.startBalance);
+    if (bp.enabled) renderFocus(bp, s); else $('focus').innerHTML = '<div class="empty">ตัวสร้างสัญญาณปิดอยู่ (BPE_ENABLED=0)</div>';
+    renderOpen(s); renderTrades(tr, st); renderSignals(sg);
+    const anyErr = bp.symbols.find(x => x.feed && x.feed.lastError), stale = s.barAge < 0 || s.barAge > 900;
+    $('status').innerHTML = `<i class="dot ${anyErr || stale ? 'bad' : 'ok'}"></i><span>${anyErr ? 'ดึงราคาไม่ได้: ' + esc(anyErr.sym) : s.barAge < 0 ? 'ยังไม่มีแท่งราคา' : stale ? 'ราคาหยุดมา ' + Math.round(s.barAge / 60) + ' นาที' : 'ราคาสด · ' + (s.barAge < 60 ? s.barAge + ' วิ' : Math.round(s.barAge / 60) + ' นาที') + 'ที่แล้ว'}</span>`;
+    drew = true;
   } catch (e) {
-    if (e.message === 'BAD_KEY') { $('app').hidden = true; $('gate').hidden = false; $('err').textContent = key ? 'API Key ไม่ถูกต้อง' : ''; }
-    else { $('upd').textContent = 'เชื่อมต่อไม่ได้: ' + e.message; }
+    if (e.message === 'BAD_KEY') { $('app').hidden = true; $('gate').hidden = false; $('err').textContent = key ? 'API Key ไม่ถูกต้อง ตรวจว่าตรงกับ API_KEY ใน Railway' : ''; }
+    else $('status').innerHTML = '<i class="dot bad"></i><span>เชื่อมต่อไม่ได้: ' + esc(e.message) + '</span>';
   }
 }
 $('ok').onclick = () => { key = $('key').value.trim(); try { localStorage.setItem(KEY, key); } catch (e) {} refresh(); };
+$('key').onkeydown = e => { if (e.key === 'Enter') $('ok').click(); };
+$('theme').onclick = () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const nx = cur === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = nx; try { localStorage.setItem(TH, nx); } catch (e) {}
+  refresh();
+};
+let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (drew) refresh(); }, 250); });
 if (!key) $('gate').hidden = false;
 refresh(); setInterval(() => { if (key) refresh(); }, 15000);
-function showTrade(id) {
-  const t = window.__tr[id]; if (!t) return;
-  const esc = x => String(x == null ? '' : x).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  $('tdetail').innerHTML = '<pre style="white-space:pre-wrap;background:#0002;padding:10px;border-radius:8px">' + '<b>ไม้ #' + t.id + ' ' + (t.side === 1 ? 'BUY' : 'SELL') + '  ' + t.R + 'R  (' + t.pnl + ')</b>\n\n<b>ทำไมถึงเข้า</b>\n' + esc(t.why ? t.why.text : '(ไม่มีข้อมูล — ไม้นี้ไม่ได้มาจาก BPE)') + (t.why && t.why.chain ? '\n\nลำดับเหตุการณ์:\n' + esc(t.why.chain.join('\n')) : '') + '\n\n<b>ทำไมถึงออก</b>\n' + esc(t.exitWhy) + '</pre>';
-}
 </script>
 </body>
 </html>
