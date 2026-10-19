@@ -109,11 +109,17 @@
   #pc text { fill:var(--faint); font-size:11px; font-family:inherit; }
   #pc .zl { fill:var(--mut); font-size:11.5px; }
   #pc .ln text { font-size:11.5px; font-weight:500; }
+  #pc .zl, #pc .ln text { paint-order:stroke; stroke:var(--panel); stroke-width:3px; stroke-linejoin:round; }
   .tip { position:absolute; pointer-events:none; z-index:3; background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:7px 10px; font-size:12.5px; line-height:1.5; box-shadow:0 4px 18px rgba(0,0,0,.14); white-space:nowrap; }
   .tip b { font-weight:600; }
   .pclegend { display:flex; flex-wrap:wrap; gap:6px 18px; padding:10px 0 2px; color:var(--mut); font-size:12.5px; }
   .pclegend span { display:inline-flex; align-items:center; gap:6px; }
   .pclegend i { display:inline-block; width:12px; height:12px; border-radius:3px; }
+  .pcsetup { margin:0 0 10px; padding:10px 14px; border:1px solid var(--rule); border-left:4px solid var(--faint); border-radius:8px; background:var(--panel); font-size:14px; line-height:1.6; }
+  .pcsetup.go { border-left-color:var(--nyam); }
+  .pcsetup b { font-weight:600; }
+  .pcsetup .est { display:inline-block; margin-left:6px; padding:0 8px; border-radius:6px; background:var(--wash); color:var(--mut); font-size:12px; }
+  .pcsetup .px { display:inline-flex; gap:6px; align-items:baseline; margin-right:12px; white-space:nowrap; }
   details.tbl { margin-top:10px; font-size:13px; color:var(--mut); }
   details.tbl summary { cursor:pointer; }
   @media (max-width:700px) { #pc { height:320px; } }
@@ -204,6 +210,7 @@
     <div class="head"><h2 id="pctitle">กราฟราคา</h2>
       <div class="pc-tools"><span class="note" id="pcnote"></span>
         <span class="seg" role="group" aria-label="ไทม์เฟรม"><button data-tf="5" aria-pressed="true">M5</button><button data-tf="15" aria-pressed="false">M15</button></span></div></div>
+    <div class="pcsetup" id="pcsetup"></div>
     <div class="pcwrap"><svg id="pc" role="img" aria-label="กราฟแท่งเทียนราคา"></svg><div class="tip" id="pctip" hidden></div></div>
     <div class="pclegend" id="pclegend"></div>
     <details class="tbl"><summary>ดูเป็นตาราง (แท่งล่าสุด 20 แท่ง)</summary><div class="tw" id="pctable"></div></details>
@@ -333,6 +340,13 @@ function renderPrice(c) {
   const span0 = hi - lo || 1, near = v => v > lo - span0 * 0.6 && v < hi + span0 * 0.6;
   const lv = [];
   for (const x of c.positions.concat(c.orders)) { for (const v of [x.price, x.sl, x.tp]) if (v > 0) lv.push(v); }
+  const sp = c.setup, pj = sp && sp.proj;
+  if (pj) [pj.entry, pj.sl, pj.tp].forEach(v => { if (v > 0) lv.push(v); });
+  if (sp && sp.level) lv.push(sp.level);
+  if (sp && sp.band) lv.push(sp.band.top, sp.band.bot);
+  if (sp && sp.zone) lv.push(sp.zone.top, sp.zone.bot);
+  if (sp && sp.box) lv.push(sp.box.top, sp.box.bot);
+  if (sp && sp.levels) sp.levels.forEach(x => lv.push(x.price));
   lv.forEach(v => { if (near(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); } });
   const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
   const Y = v => pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo)), F = v => Number(v).toFixed(dg);
@@ -367,6 +381,29 @@ function renderPrice(c) {
     const [, o, h, l, cl] = bars[i], up = cl >= o, col = up ? 'var(--up)' : 'var(--dn)', x = X(i), yo = Y(o), yc = Y(cl);
     g += `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${Y(h).toFixed(1)}" y2="${Y(l).toFixed(1)}" stroke="${col}" stroke-width="1.2"/><rect x="${(x - bw / 2).toFixed(1)}" y="${Math.min(yo, yc).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, Math.abs(yc - yo)).toFixed(1)}" fill="${up ? 'var(--panel)' : col}" stroke="${col}" stroke-width="1.2" rx="1"/>`;
   }
+  // the waiting setup: zones and levels it needs, then where it would enter (dashed = not an order yet)
+  const dirW = sp ? (sp.dir === 1 ? 'เหนือ' : 'ใต้') : '', sideW = sp ? (sp.dir === 1 ? 'SSL' : 'BSL') : '', pend = 'var(--nyam)';
+  const used = [], slot = y => { let k = 0; while (used.some(u => u.k === k && Math.abs(u.y - y) < 13)) k++; used.push({ y, k }); return pl + 6 + k * 205; };   // labels that would sit on top of each other move right
+  const zone = (top, bot, lab, col, op) => { if (top < lo || bot > hi) return ''; const y1 = Y(Math.min(top, hi)), y2 = Y(Math.max(bot, lo)); return `<rect x="${pl}" y="${y1.toFixed(1)}" width="${W - pl - pr}" height="${Math.max(3, y2 - y1).toFixed(1)}" fill="${col}" opacity="${op}"/><line x1="${pl}" x2="${W - pr}" y1="${y1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${col}" stroke-width="1.2" opacity=".8"/><line x1="${pl}" x2="${W - pr}" y1="${y2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}" stroke-width="1.2" opacity=".8"/><text class="zl" x="${slot(y1 + 13)}" y="${(y1 + 13).toFixed(1)}" style="fill:${col}">${lab}</text>`; };
+  const dline = (v, lab, col, tag) => { if (!(v > 0) || v < lo || v > hi) return ''; return `<g class="ln"><line x1="${pl}" x2="${W - pr}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="${col}" stroke-width="1.6" stroke-dasharray="7 5"/>${tag ? `<rect x="${W - pr}" y="${(Y(v) - 9).toFixed(1)}" width="${pr - 2}" height="18" rx="4" fill="var(--panel)" stroke="${col}" stroke-width="1.4" stroke-dasharray="3 2"/><text x="${W - pr + 4}" y="${(Y(v) + 4).toFixed(1)}" style="fill:${col}">${F(v)}</text>` : ''}<text x="${slot(Y(v) - 5)}" y="${(Y(v) - 5).toFixed(1)}" style="fill:${col}">${lab}</text></g>`; };
+  if (sp) {
+    if (sp.stage === 'sweep') { if (sp.poi) g += zone(sp.poi.top, sp.poi.bot, 'POI ที่ราคาเข้า · รอกวาด ' + sideW, pend, '.12'); (sp.levels || []).forEach(x => { g += dline(x.price, 'รอกวาด ' + sideW + ' (' + esc(x.name) + ')', pend, true); }); }
+    if (sp.stage === 'mss' || sp.stage === 'fvgwait' || sp.stage === 'box') {
+      if (sp.band) g += zone(sp.band.top, sp.band.bot, 'OTE 62–79% (คาดการณ์)', pend, '.12');
+      if (sp.eq) g += dline(sp.eq, '50% (ใต้ = Discount)', 'var(--faint)', false).replace('stroke-width="1.6"', 'stroke-width="1"');
+      if (sp.sweep && sp.sweep.extreme) g += dline(sp.sweep.extreme, 'จุดที่กวาดแล้ว', 'var(--mut)', false);
+      if (sp.level && sp.stage !== 'fvgwait') g += dline(sp.level, 'รอ ' + sp.levelName + ' ปิด' + dirW, pend, true);
+      if (sp.box) g += zone(sp.box.top, sp.box.bot, 'BOX รอปิดทะลุ · เข้าที่ 50%', 'var(--asia)', '.12');
+    }
+    if (sp.stage === 'fvg') {
+      if (sp.fvg && sp.exact && sp.zone && (sp.zone.top !== sp.fvg.top || sp.zone.bot !== sp.fvg.bot)) g += zone(sp.fvg.top, sp.fvg.bot, 'FVG', 'var(--london)', '.08');
+      if (sp.zone) g += zone(sp.zone.top, sp.zone.bot, sp.exact ? 'โซนเข้า ' + esc(sp.model) + (sp.ready ? '' : ' (รอช่วงเทรด)') : 'FVG เกิดแล้ว · ยังไม่ผ่านเงื่อนไขโมเดล', sp.exact ? 'var(--nyam)' : 'var(--london)', '.16');
+    }
+    if (pj) {
+      const buy = sp.dir === 1, ex = sp.exact || sp.stage === 'box' && sp.box && sp.box.ready;
+      g += dline(pj.tp, 'TP ' + (ex ? '' : 'คาดการณ์ ') + esc(pj.tpName || ''), 'var(--up)', true) + dline(pj.entry, (ex ? 'ENTRY ที่จะวาง ' : 'ENTRY คาดการณ์ ') + (buy ? 'BUY' : 'SELL'), 'var(--ink)', true) + dline(pj.sl, 'SL ' + (ex ? '' : 'คาดการณ์'), 'var(--dn)', true);
+    }
+  }
   // closed trades: entry marker -> exit marker, coloured by result
   c.trades.forEach(t => {
     const i0 = idxAt(t.openT), i1 = idxAt(t.closeT); if (i1 < 0) return; const a = Math.max(0, i0), win = t.pnl >= 0, col = win ? 'var(--up)' : 'var(--dn)', buy = t.side === 1;
@@ -398,9 +435,17 @@ function renderPrice(c) {
     const left = (pt0.clientX - r.left) + 14; tip.style.left = Math.min(left, r.width - tip.offsetWidth - 6) + 'px'; tip.style.top = Math.max(0, (pt0.clientY - r.top) - 56) + 'px';
   };
   svg.onmouseleave = svg.ontouchend = () => { tip.hidden = true; cx.setAttribute('opacity', '0'); };
+  // one-line summary of the waiting setup
+  const el = $('pcsetup'), STG = { sweep: ['ขั้น 1/4', 'ราคาอยู่ใน POI · รอกวาด ' + sideW], mss: ['ขั้น 2/4', sp && sp.level ? 'กวาดแล้ว · รอ ' + sp.levelName + ' ปิด' + dirW + ' ' + F(sp.level) : 'กวาดแล้ว · รอจุดอ้างอิง ' + (sp ? sp.levelName : '')], fvgwait: ['ขั้น 3/4', 'ยืนยันกลับตัวแล้ว · รอ FVG เกิด'], fvg: ['ขั้น 4/4', sp && sp.exact ? (sp.ready ? 'โมเดล ' + esc(sp.model) + ' ครบเงื่อนไข · วาง limit ได้' : 'โมเดล ' + esc(sp.model) + ' ครบเงื่อนไข · รอเข้าช่วงเทรด') : 'FVG เกิดแล้วแต่ยังไม่ผ่านเงื่อนไขโมเดล (Discount / OTE / IDM)'], box: ['Model 4', 'เจอกรอบ consolidation · รอปิดทะลุกรอบ'] };
+  if (!sp) { el.className = 'pcsetup'; el.innerHTML = `<span class="mut">ตอนนี้ยังไม่มี setup ที่รออยู่ · ${esc(thState(c.state))}</span>`; }
+  else {
+    const st = STG[sp.stage] || ['', ''], buy = sp.dir === 1, exact = sp.exact;
+    el.className = 'pcsetup go';
+    el.innerHTML = `<b class="${buy ? 'up' : 'dn'}">${buy ? 'BUY' : 'SELL'}</b> · <b>${st[0]}</b> ${st[1]}` + (pj ? `<br><span class="px">${exact ? 'จุดเข้า' : 'จุดเข้าที่คาดไว้'} <b>${F(pj.entry)}</b></span><span class="px">SL <b class="dn">${F(pj.sl)}</b></span><span class="px">TP <b class="up">${pj.tp ? F(pj.tp) : '-'}</b> ${esc(pj.tpName || '')}</span><span class="px">RR <b>${pj.rr || '-'}</b></span>${exact ? '' : '<span class="est">ประมาณการ · ยังไม่ใช่คำสั่งจริง</span>'}${pj.okRR || !pj.tp ? '' : '<span class="est dn">RR ต่ำกว่าเกณฑ์ ถ้าไม่ดีขึ้นจะไม่เข้า</span>'}` : '<br><span class="mut">ยังประเมินจุดเข้าไม่ได้ในขั้นนี้</span>');
+  }
   const wl = c.positions.length + c.orders.length;
   $('pcnote').textContent = `M${c.tf} · ${n} แท่ง · เวลานิวยอร์ก · ${c.bias === 'BULL' ? 'ทิศขึ้น' : c.bias === 'BEAR' ? 'ทิศลง' : 'ยังไม่มีทิศ'}${wl ? '' : ' · ไม่มีไม้เปิด'}`;
-  $('pclegend').innerHTML = `<span><i style="background:var(--up)"></i>แท่งขึ้น</span><span><i style="background:var(--dn)"></i>แท่งลง</span><span><i style="background:var(--london);opacity:.45"></i>POI แบบ FVG</span><span><i style="background:var(--asia);opacity:.45"></i>POI แบบ OB</span><span><i style="background:var(--ink)"></i>Entry</span><span><i style="background:var(--dn)"></i>SL</span><span><i style="background:var(--up)"></i>TP</span><span>▲▼ ไม้ที่ปิดแล้ว (เขียว = กำไร, แดง = ขาดทุน)</span><span>แถบสีพื้นหลัง = ช่วงเทรด</span>`;
+  $('pclegend').innerHTML = `<span><i style="background:var(--up)"></i>แท่งขึ้น</span><span><i style="background:var(--dn)"></i>แท่งลง</span><span><i style="background:var(--london);opacity:.45"></i>POI แบบ FVG</span><span><i style="background:var(--asia);opacity:.45"></i>POI แบบ OB</span><span><i style="background:var(--ink)"></i>Entry</span><span><i style="background:var(--dn)"></i>SL</span><span><i style="background:var(--up)"></i>TP</span><span>▲▼ ไม้ที่ปิดแล้ว (เขียว = กำไร, แดง = ขาดทุน)</span><span>แถบสีพื้นหลัง = ช่วงเทรด</span><span>เส้นประ = จุดที่ setup รออยู่ ยังไม่ใช่คำสั่งจริง</span>`;
   $('pctable').innerHTML = '<table><thead><tr><th>เวลา NY</th><th class="r">เปิด</th><th class="r">สูง</th><th class="r">ต่ำ</th><th class="r">ปิด</th></tr></thead><tbody>' + bars.slice(-20).reverse().map(b => `<tr><td>${nyStr(b[0])}</td><td class="r">${F(b[1])}</td><td class="r">${F(b[2])}</td><td class="r">${F(b[3])}</td><td class="r ${b[4] >= b[1] ? 'up' : 'dn'}">${F(b[4])}</td></tr>`).join('') + '</tbody></table>';
 }
 
@@ -500,7 +545,8 @@ function renderOpen(s) {
 function renderTrades(tr, st) {
   TRADES = {}; tr.trades.forEach(t => TRADES[t.id] = t);
   const MN = { M1: 'M1 MSS+FVG', M2: 'M2 +IDM', M3: 'M3 +OTE', M4: 'M4 BOX', UC: 'Unicorn', TS: 'Turtle Soup' };
-  $('bymodel').innerHTML = (st.byModel || []).map(b => `<div><b>${esc(MN[b.model] || b.model)}</b><span class="${cls(b.netPnl)}">${signed(b.sumR)}R · ${b.trades} ไม้ · ${b.winRate}%</span></div>`).join('');
+  $('bymodel').innerHTML = (st.byModel || []).map(b => `<div><b>${esc(MN[b.model] || b.model)}</b><span class="${cls(b.netPnl)}">${signed(b.sumR)}R · ${b.trades} ไม้ · ${b.winRate}%</span></div>`).join('')
+    + (st.byGrade || []).map(b => `<div><b>เกรด ${esc(b.grade)}</b><span class="${cls(b.netPnl)}">${signed(b.sumR)}R · ${b.trades} ไม้ · ${b.winRate}%</span></div>`).join('');
   $('bysym').innerHTML = (st.bySymbol || []).filter(b => b.trades).map(b => `<div><b>${b.sym}</b><span class="${cls(b.netPnl)}">${signed(b.netPnl)} · ${b.trades} ไม้ · ${b.winRate}%</span></div>`).join('');
   if (!tr.trades.length) { $('closed').innerHTML = '<div class="empty">ยังไม่มีไม้ที่ปิด Forward test เริ่มบันทึกทันทีที่มีไม้แรก</div>'; return; }
   const rows = tr.trades.slice().reverse().map(t => {

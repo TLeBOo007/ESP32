@@ -41,7 +41,7 @@ const PRESETS = {
   US30:   { digits: 2, spread: 2.0,     mult: 1,      yahoo: 'YM=F',      twelve: 'DIA',     spreadTD: 0.02 },
   EURUSD: { digits: 5, spread: 0.00012, mult: 100000, yahoo: 'EURUSD=X',  twelve: 'EUR/USD', bpe: { waitEquityOpen: false } },
   USDJPY: { digits: 3, spread: 0.012,   mult: 100000 / 150, jpy: true, yahoo: 'JPY=X', twelve: 'USD/JPY', bpe: { waitEquityOpen: false } },
-  XAUUSD: { digits: 2, spread: 0.30,    mult: 100,    yahoo: 'GC=F',      twelve: 'XAU/USD', bpe: { waitEquityOpen: false } },
+  XAUUSD: { digits: 2, spread: 0.30,    mult: 100,    yahoo: 'GC=F',      twelve: 'XAU/USD', bpe: { waitEquityOpen: false, biasMode: 0 } }   // gold: H4-only bias (H4 vs D1 often conflict -> no trades); such trades get grade B/C,
 };
 const LEGACY = !process.env.SYMBOLS;                                       // old single-symbol setup: SYMBOL / DIGITS / SPREAD / MULTIPLIER decide everything
 const SYM_LIST = (process.env.SYMBOLS || process.env.SYMBOL || 'US100').split(',').map(x => x.trim().toUpperCase()).filter(Boolean);
@@ -330,6 +330,7 @@ const handlers = {
     const en = inst.engine, slim = x => ({ id: x.id, side: x.side, price: x.price || x.open, sl: x.sl, tp: x.tp, t: x.openT || x.createdT || 0, comment: x.comment || '' });
     return {
       sym: inst.sym, tf, poiTF: bp.c.poiTF, digits: inst.cfg.digits, bars, bias: bp.status().bias, state: bp.stateTxt, quote: en.quote,
+      setup: bp.preview ? { ...bp.preview } : null,                  // the waiting setup, read-only (stage, zones, projected entry/SL/TP)
       poi: bp.poi.map(p => ({ top: p.top, bot: p.bot, type: p.type === 0 ? 'FVG' : 'OB' })),
       orders: en.orders.map(slim), positions: en.positions.map(x => ({ ...slim(x), price: x.open })),
       trades: en.trades.filter(x => x.closeT >= t0).map(x => ({ id: x.id, side: x.side, open: x.open, close: x.close, openT: x.openT, closeT: x.closeT, reason: x.reason, R: x.R, pnl: x.pnl, comment: x.comment || '' })),

@@ -201,8 +201,15 @@ class Engine {
       const m = /BPE\s+(\S+)/.exec(x.comment || ''), k = m ? m[1] : 'other', b = bm[k] = bm[k] || { model: k, trades: 0, wins: 0, netPnl: 0, sumR: 0 };
       b.trades++; if (x.pnl > 0) b.wins++; b.netPnl += x.pnl; b.sumR += x.R;
     }
+    const bg = {};
+    for (const x of t) {                                           // per grade: "G<A|B|C>" token in the comment (classic mode only)
+      const m = /\sG([ABC])\b/.exec(x.comment || ''); if (!m) continue;
+      const b = bg[m[1]] = bg[m[1]] || { grade: m[1], trades: 0, wins: 0, netPnl: 0, sumR: 0 };
+      b.trades++; if (x.pnl > 0) b.wins++; b.netPnl += x.pnl; b.sumR += x.R;
+    }
+    const byGrade = Object.values(bg).map(b => ({ grade: b.grade, trades: b.trades, winRate: round(b.wins / b.trades * 100, 1), netPnl: round(b.netPnl, 2), sumR: round(b.sumR, 2) })).sort((p, q) => p.grade < q.grade ? -1 : 1);
     const byModel = Object.values(bm).map(b => ({ model: b.model, trades: b.trades, winRate: round(b.wins / b.trades * 100, 1), netPnl: round(b.netPnl, 2), sumR: round(b.sumR, 2) })).sort((p, q) => p.model < q.model ? -1 : 1);
-    return { byModel,
+    return { byModel, byGrade,
       trades: t.length, wins: wins.length, losses: loss.length, winRate: t.length ? round(wins.length / t.length * 100, 1) : 0,
       netPnl: round(this.balance - this.startBalance, 2), sumR: round(sumR, 2), profitFactor: gl > 0 ? round(gp / gl, 2) : (gp > 0 ? null : 0),
       maxDrawdown: round(dd, 2),

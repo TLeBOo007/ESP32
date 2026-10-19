@@ -56,3 +56,17 @@ console.log('classic model tests ok');
   assert.strictEqual(g('M3').trades, 2); assert.strictEqual(g('M3').winRate, 50); assert.strictEqual(g('M3').sumR, 1.4); assert.strictEqual(g('UC').trades, 1); assert.strictEqual(g('other').trades, 1);
   console.log('per-model stats ok');
 }
+
+// grade label: label only, A = D1 agrees + extra confluence, B = one, C = none
+{
+  const { Bpe: BPE } = require('../lib/bpe.js');
+  const b = Object.create(BPE.prototype);
+  b.biasD1 = 1;
+  const g = (d, mdl, fl) => b._grade(d, mdl, { fl }).g;
+  const assert = require('assert');
+  assert.strictEqual(g(1, 'M3', { ote: true }), 'A');
+  assert.strictEqual(g(1, 'M1', {}), 'B');
+  assert.strictEqual(g(-1, 'M2', { idm: true }), 'B');
+  assert.strictEqual(g(-1, 'M1', {}), 'C');
+  console.log('grade labels ok');
+}
