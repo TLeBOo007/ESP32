@@ -27,6 +27,7 @@ async function call(base, method, p, body) {
   let ex = (await call(base, 'GET', '/api/exam')).json;
   assert(ex.enabled && ex.status === 'active' && ex.floor === 49700 && ex.target === 3000 && ex.capContracts === 2 && ex.windowOpen);
 
+  assert(m.exam && m.exam.st === 0 && m.exam.win === 1 && m.exam.start === 50000 && m.exam.tgt === 3000 && m.exam.mll === 300 && m.exam.flr === 49700 && m.exam.cap === 2 && m.exam.risk === 0.5 && m.exam.comm === 2 && m.exam.ct === 0, 'meta carries the exam summary for the ESP32: ' + JSON.stringify(m.exam));
   // guard: stop required, risk too big, size clamped
   const ord = o => call(base, 'POST', '/api/order', { sym: 'US100', side: 1, kind: 'limit', volume: 100, price: 24900, sl: 24800, tp: 25200, ...o });
   let r = await ord({ sl: 0 }); assert.strictEqual(r.code, 400); assert(r.json.error.startsWith('EXAM_NO_STOP'));

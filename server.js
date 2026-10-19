@@ -392,6 +392,15 @@ function setupBrief(i) {
   return { d: p.dir, s: S, x: p.exact ? 1 : 0, rdy: p.ready ? 1 : 0, lv: p.level || 0, ln: p.levelName || '', m: p.model || '',
     e: pj ? pj.entry : 0, sl: pj ? pj.sl : 0, tp: pj ? pj.tp : 0, rr: pj ? pj.rr : 0, ok: pj && pj.okRR ? 1 : 0 };
 }
+// Compact exam summary for the ESP32 (same numbers as /api/exam): it applies the same rules itself and shows the progress on its screen.
+function examBrief() {
+  if (!exam) return null;
+  const x = examEval(); if (!x) return null;
+  const ct = (allPositions().reduce((a, p) => a + p.volume, 0) + allOrders().reduce((a, o) => a + o.volume, 0)) / 100;
+  return { st: x.status === 'failed' ? 1 : x.status === 'passed' ? 2 : 0, blk: x.blockedToday ? 1 : 0, win: x.windowOpen ? 1 : 0, ok: x.consistencyOK ? 1 : 0,
+    start: x.start, tgt: x.target, mll: x.mll, pr: x.profit, buf: x.buffer, flr: x.floor, dp: x.dayPnl, dll: x.dll, dl: x.dllLeft === null ? 0 : x.dllLeft,
+    risk: x.riskPct, cap: x.capContracts, ct, comm: x.commissionRT, bp: x.bestPct, need: x.needProfit, d: x.days, md: x.minDays };
+}
 function metaView(inst) {
   rollDay();
   const en = inst.engine, st = en.state(), q = st.quote.bid ? st.quote : { bid: 0, ask: 0, t: 0 }, cf = inst.bpe.c;
@@ -404,6 +413,7 @@ function metaView(inst) {
     kz: { asia: !!inst.bpe.kzA, london: !!inst.bpe.kzL, nyam: !!inst.bpe.kzAM, nypm: !!inst.bpe.kzPM, waitEquityOpen: !!cf.waitEquityOpen },
     symbols: [...insts.values()].map(i => ({ sym: i.sym, digits: i.cfg.digits, mult: i.engine.mult, bid: i.engine.quote.bid, ask: i.engine.quote.ask, lastBarT: i.engine.lastBarT, open: i.engine.positions.length, pend: i.engine.orders.length, bias: i.bpe.bias, tr: tradeBrief(i), su: setupBrief(i), kz: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, waitEquityOpen: !!i.bpe.c.waitEquityOpen } })),
     openAll: allPositions().length + allOrders().length, positionsAll: allPositions(), ordersAll: allOrders(),
+    exam: examBrief(),
   };
 }
 function allEquity() { return [].concat(...[...insts.values()].map(i => i.engine.equity)).sort((a, b) => a[0] - b[0]); }
