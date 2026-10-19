@@ -65,7 +65,7 @@ for (const sym of SYM_LIST) {
     symbol: sym, digits: cfg.digits, point, tickSize: point, tickValue: point * cfg.mult,
     minLot: MIN_VOLUME / 100, lotStep: STEP_VOLUME / 100, maxLot: MAX_VOLUME / 100,
     riskPercent: Number(process.env.BPE_RISK_PERCENT || 2), maxTradesPerDay: Number(process.env.BPE_MAX_TRADES || 3), dailyLossPct: Number(process.env.BPE_DAILY_LOSS || 10),
-  }, cfg.bpe, process.env.BPE_CONFIG ? JSON.parse(process.env.BPE_CONFIG) : {}, E('BPE_CONFIG') ? JSON.parse(E('BPE_CONFIG')) : {}), {
+  }, process.env.BPE_CONFIG ? JSON.parse(process.env.BPE_CONFIG) : {}, cfg.bpe, E('BPE_CONFIG') ? JSON.parse(E('BPE_CONFIG')) : {}), {   // order: global BPE_CONFIG < the preset of this instrument < BPE_CONFIG_<SYM>
     balance: () => acct.balance,
     ours: () => {
       const out = [], en = inst.engine;
