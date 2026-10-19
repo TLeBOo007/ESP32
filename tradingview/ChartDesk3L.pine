@@ -1,0 +1,1578 @@
+//@version=6
+// Chart Desk 3L - top-down workflow from the "Chart Desk" web app
+//   Layer 1  Elliott Wave : trend direction + invalidation (widest valid count)
+//   Layer 2  Wyckoff      : completed accumulation (long) / distribution (short)
+//   Layer 3  ICT          : sweep > displacement leaving an FVG > MSS, limit at the FVG's CE
+// All gates are AND gates. ICT is tracked bar by bar; Elliott and Wyckoff are evaluated
+// only on bars where an ICT setup is waiting, using the last N closed bars only (no look-ahead).
+// Layer 4 (optional) Footprint confirmation, after the "Footprint" e-book method: wait for price to
+// reach the zone, then enter only when the footprint shows Aggressive Orders (stacked imbalance + delta flip
+// on a real-range bar) or Absorption / Big Limit Order at the zone. CVD can move the stop to break-even.
+// Footprint needs a TradingView Premium/Ultimate plan and a symbol with real volume (futures such as NQ, ES, GC).
+// Educational tool, not investment advice.
+strategy("Chart Desk 3L: Elliott > Wyckoff > ICT", shorttitle="ChartDesk3L", overlay=true, max_bars_back=2000, initial_capital=10000, pyramiding=0, calc_on_every_tick=false, process_orders_on_close=false)
+
+// ---------------- inputs ----------------
+modeIn = input.string("3 layers", "Mode", options=["3 layers", "Skip Wyckoff", "ICT only"], group="Workflow")
+winBars = input.int(500, "Bars analysed per evaluation", minval=150, maxval=1500, group="Workflow")
+swingLen = input.int(3, "Swing length (bars each side)", minval=2, maxval=10, group="Workflow")
+dispK = input.float(1.5, "Displacement: body >= k x ATR", step=0.1, group="Workflow")
+fvgMin = input.float(0.1, "Min FVG size (x ATR)", step=0.05, group="Workflow")
+minRR = input.float(2.0, "Minimum reward:risk", step=0.5, group="Workflow")
+trigWin = input.int(40, "Look back for MSS/BOS (bars)", group="Workflow")
+sweepWin = input.int(25, "Sweep allowed before leg origin (bars)", group="Workflow")
+climaxVol = input.float(2.0, "Wyckoff climax volume (x average)", step=0.1, group="Workflow")
+wyLook = input.int(400, "Wyckoff: bars to search for a climax", group="Workflow")
+zzK = input.float(3.0, "Elliott zigzag reversal (x ATR)", step=0.25, group="Workflow")
+closeBasis = input.bool(true, "Elliott rule 3 judged on closes", group="Workflow")
+expiryBars = input.int(20, "Cancel unfilled limit after N bars", group="Orders")
+maxHold = input.int(0, "Close position after N bars (0 = off)", group="Orders")
+riskPct = input.float(1.0, "Risk per trade (% of equity)", step=0.25, group="Orders")
+showPanel = input.bool(true, "Show status panel", group="Orders")
+whOn = input.bool(true, "Send webhook alerts (signals)", group="Webhook", tooltip="Create ONE alert on this strategy: Condition = this strategy, then choose 'alert() function calls only'. Notifications: tick Webhook URL = https://YOUR-APP.up.railway.app/tv?key=YOUR_API_KEY . The message box is ignored for alert() calls.")
+whBars = input.bool(true, "Also send every closed bar (prices for the paper account)", group="Webhook")
+whTag = input.string("CD3L", "Signal tag", group="Webhook")
+
+// ---------------- webhook helpers ----------------
+// Signals and closed bars go to the cloud server as JSON; the ESP32 reads the signals and trades them.
+// Times are bar-open UTC seconds (Pine time is in milliseconds).
+whSignal(string action, float e, float s, float tg, string note) =>
+    if whOn
+        alert('{"event":"signal","action":"' + action + '","price":' + str.tostring(nz(e)) + ',"sl":' + str.tostring(nz(s)) + ',"tp":' + str.tostring(nz(tg)) + ',"t":' + str.tostring(math.floor(time / 1000)) + ',"id":"' + whTag + '","comment":"' + note + '"}', alert.freq_all)
+    0
+useFp = input.bool(false, "Require footprint confirmation (needs Premium/Ultimate plan + volume data)", group="Footprint")
+fpTicks = input.int(4, "Ticks per footprint row", minval=1, group="Footprint")
+fpImb = input.int(300, "Imbalance threshold (%)", minval=100, group="Footprint")
+confMode = input.string("Aggressive or Absorption", "Confirmation type", options=["Aggressive or Absorption", "Aggressive only", "Absorption only"], group="Footprint")
+stackMin = input.int(3, "Stacked imbalance: min rows in a row", minval=1, group="Footprint")
+rangeK = input.float(0.6, "Aggressive bar: min range (x ATR)", step=0.1, group="Footprint")
+absK = input.float(2.0, "Absorption: heavy row (x avg row volume)", step=0.25, group="Footprint")
+absBal = input.float(0.25, "Absorption: max |delta| / row volume", step=0.05, group="Footprint")
+bigK = input.float(4.0, "Big limit order (x avg row volume)", step=0.5, group="Footprint")
+needDiv = input.bool(false, "Also require CVD divergence at the sweep", group="Footprint")
+fpMinRR = input.float(1.5, "Min R:R at confirmation price", step=0.25, group="Footprint")
+cvdTrail = input.bool(true, "CVD trailing: stop to break-even when CVD turns against the trade", group="Footprint")
+
+MODE = 0
+if modeIn == "Skip Wyckoff"
+    MODE := 1
+if modeIn == "ICT only"
+    MODE := 2
+
+// ---------------- persistent state ----------------
+// liquidity pools (from confirmed swings)
+var pP = array.new_float(0)
+var pI = array.new_int(0)
+var pSide = array.new_int(0)
+var pSt = array.new_int(0)
+var pJ = array.new_int(0)
+// fair value gaps
+var fD = array.new_int(0)
+var fTop = array.new_float(0)
+var fBot = array.new_float(0)
+var fCE = array.new_float(0)
+var fCr = array.new_int(0)
+var fFill = array.new_int(0)
+var fCeAt = array.new_int(0)
+// structure events (BOS / CHoCH)
+var eK = array.new_int(0)
+var eD = array.new_int(0)
+var eT = array.new_int(0)
+var eOi = array.new_int(0)
+var eDisp = array.new_int(0)
+var usedK = array.new_int(0)
+var float lhP = 0.0
+var int lhI = -1
+var bool lhBr = true
+var float llP = 0.0
+var int llI = -1
+var bool llBr = true
+var int trend = 0
+// analysis window (chronological, 0 = oldest)
+var wO = array.new_float(0)
+var wH = array.new_float(0)
+var wL = array.new_float(0)
+var wC = array.new_float(0)
+var wV = array.new_float(0)
+var wA = array.new_float(0)
+var wR = array.new_float(0)
+var wCum = array.new_float(0)
+var bool wAllPos = true
+// Wyckoff work arrays (sign-normalised)
+var mO = array.new_float(0)
+var mH = array.new_float(0)
+var mL = array.new_float(0)
+var mC = array.new_float(0)
+var sI = array.new_int(0)
+var sP = array.new_float(0)
+var sT = array.new_int(0)
+var lMap = array.new_int(0)
+// Elliott work arrays
+var zI = array.new_int(0)
+var zP = array.new_float(0)
+var zT = array.new_int(0)
+var qI = array.new_int(0)
+var qP = array.new_float(0)
+var qT = array.new_int(0)
+var sqIdx = array.new_int(0)
+var sqM = array.new_int(0)
+var sqOff = array.new_int(0)
+var chain = array.new_int(7, 0)
+var ptr = array.new_int(8, 0)
+var cKind = array.new_int(0)
+var cM = array.new_int(0)
+var cD = array.new_int(0)
+var cOff = array.new_int(0)
+var cSpan = array.new_int(0)
+var cScore = array.new_float(0)
+var cInv = array.new_float(0)
+var cInvOk = array.new_bool(0)
+// orders
+var int pendBar = -1
+var int pendDir = 0
+var float pendTP = 0.0
+var int entryBar = -1
+var float prevPos = 0.0
+var float showE = na
+var float showS = na
+var float showT = na
+// footprint watch / trade state
+var float cvd = 0.0
+var int wDir = 0
+var int wBar = -1
+var float wCE = 0.0
+var float wStop = 0.0
+var float wTgt = 0.0
+var bool wTouched = false
+var bool wDiv = false
+var float posStop = 0.0
+var float posTgt = 0.0
+var float posEntry = 0.0
+var float cvdEntry = 0.0
+var bool beDone = false
+var int fpBars = 0
+var int fpMiss = 0
+var string txt4 = "-"
+var int st4 = 0
+// last evaluation (for the panel)
+var string txt1 = "-"
+var string txt2 = "-"
+var string txt3 = "-"
+var int st1 = 0
+var int st2 = 0
+var int st3 = 0
+
+// ---------------- per-bar ICT tracking ----------------
+t = bar_index
+atrRaw = ta.atr(14)
+atrv = nz(atrRaw, high - low)
+L = swingLen
+winStart = t - winBars + 1
+
+// ---------------- per-bar footprint metrics ----------------
+footprint fp = na
+if useFp
+    fp := request.footprint(fpTicks, 70, fpImb)
+fpOk = not na(fp)
+fDelta = 0.0
+fVol = 0.0
+stackB = 0
+stackS = 0
+absLow = false
+absHigh = false
+bigBidLow = false
+bigAskHigh = false
+if fpOk
+    fDelta := footprint.delta(fp)
+    fVol := footprint.buy_volume(fp) + footprint.sell_volume(fp)
+    rows = footprint.rows(fp)
+    nR = array.size(rows)
+    avgR = 0.0
+    if nR > 0
+        avgR := fVol / nR
+    runB = 0
+    runS = 0
+    third = (high - low) / 3
+    iR = 0
+    while iR < nR
+        rw = array.get(rows, iR)
+        if volume_row.has_buy_imbalance(rw)
+            runB += 1
+            stackB := math.max(stackB, runB)
+        else
+            runB := 0
+        if volume_row.has_sell_imbalance(rw)
+            runS += 1
+            stackS := math.max(stackS, runS)
+        else
+            runS := 0
+        mid = (volume_row.up_price(rw) + volume_row.down_price(rw)) / 2
+        tv = volume_row.total_volume(rw)
+        heavy = avgR > 0 and tv >= absK * avgR
+        balanced = tv > 0 and math.abs(volume_row.delta(rw)) <= absBal * tv
+        inLow = mid <= low + third
+        inHigh = mid >= high - third
+        if heavy and balanced and inLow
+            absLow := true
+        if heavy and balanced and inHigh
+            absHigh := true
+        if avgR > 0 and volume_row.sell_volume(rw) >= bigK * avgR and inLow
+            bigBidLow := true
+        if avgR > 0 and volume_row.buy_volume(rw) >= bigK * avgR and inHigh
+            bigAskHigh := true
+        iR += 1
+cvd := cvd + fDelta
+prevDelta = nz(fDelta[1])
+if t >= 150
+    fpBars += 1
+    if not fpOk
+        fpMiss += 1
+// confirmation on this bar (e-book: Aggressive Orders / Absorption / Big Limit Order)
+aggL = fpOk and fDelta > 0 and prevDelta < 0 and stackB >= stackMin and high - low >= rangeK * atrv and close > open
+aggS = fpOk and fDelta < 0 and prevDelta > 0 and stackS >= stackMin and high - low >= rangeK * atrv and close < open
+absL = fpOk and (absLow or bigBidLow) and close > (high + low) / 2
+absS = fpOk and (absHigh or bigAskHigh) and close < (high + low) / 2
+okAgg = confMode != "Absorption only"
+okAbs = confMode != "Aggressive only"
+confL = (okAgg and aggL) or (okAbs and absL)
+confS = (okAgg and aggS) or (okAbs and absS)
+
+// pools: did this bar take any resting liquidity?
+nP = array.size(pP)
+q = 0
+while q < nP
+    if array.get(pSt, q) == 0 and array.get(pI, q) < t
+        pv = array.get(pP, q)
+        if array.get(pSide, q) == 1 and high > pv
+            stv = 2
+            if close < pv
+                stv := 1
+            array.set(pSt, q, stv)
+            array.set(pJ, q, t)
+        else if array.get(pSide, q) == -1 and low < pv
+            stv = 2
+            if close > pv
+                stv := 1
+            array.set(pSt, q, stv)
+            array.set(pJ, q, t)
+    q += 1
+
+// FVGs: update fills, then detect a new one ending on this bar
+nF = array.size(fD)
+q2 = 0
+while q2 < nF
+    if array.get(fFill, q2) == -1 and array.get(fCr, q2) < t
+        ce = array.get(fCE, q2)
+        if array.get(fD, q2) == 1
+            if array.get(fCeAt, q2) == -1 and low <= ce
+                array.set(fCeAt, q2, t)
+            if low <= array.get(fBot, q2)
+                array.set(fFill, q2, t)
+        else
+            if array.get(fCeAt, q2) == -1 and high >= ce
+                array.set(fCeAt, q2, t)
+            if high >= array.get(fTop, q2)
+                array.set(fFill, q2, t)
+    q2 += 1
+if t >= 2
+    if low > high[2] and low - high[2] >= fvgMin * atrv
+        array.push(fD, 1)
+        array.push(fTop, low)
+        array.push(fBot, high[2])
+        array.push(fCE, (low + high[2]) / 2)
+        array.push(fCr, t)
+        array.push(fFill, -1)
+        array.push(fCeAt, -1)
+    else if high < low[2] and low[2] - high >= fvgMin * atrv
+        array.push(fD, -1)
+        array.push(fTop, low[2])
+        array.push(fBot, high)
+        array.push(fCE, (low[2] + high) / 2)
+        array.push(fCr, t)
+        array.push(fFill, -1)
+        array.push(fCeAt, -1)
+
+// swings confirmed on this bar (pivot at t - L)
+if t >= 2 * L
+    isH = true
+    isL = true
+    for j = 1 to L
+        if high[L + j] >= high[L]
+            isH := false
+        if low[L + j] <= low[L]
+            isL := false
+        if high[L - j] > high[L]
+            isH := false
+        if low[L - j] < low[L]
+            isL := false
+    if isH
+        array.push(pP, high[L])
+        array.push(pI, t - L)
+        array.push(pSide, 1)
+        array.push(pSt, 0)
+        array.push(pJ, -1)
+        lhP := high[L]
+        lhI := t - L
+        lhBr := false
+    if isL
+        array.push(pP, low[L])
+        array.push(pI, t - L)
+        array.push(pSide, -1)
+        array.push(pSt, 0)
+        array.push(pJ, -1)
+        llP := low[L]
+        llI := t - L
+        llBr := false
+
+// structure: BOS / CHoCH on close
+for pss = 0 to 1
+    dir = 1
+    if pss == 1
+        dir := -1
+    lvI = lhI
+    lvP = lhP
+    br = lhBr
+    if dir == -1
+        lvI := llI
+        lvP := llP
+        br := llBr
+    hit = false
+    if lvI >= 0 and not br and t - lvI < 1900
+        if dir == 1 and close > lvP
+            hit := true
+        if dir == -1 and close < lvP
+            hit := true
+    if hit
+        oi = lvI
+        k = lvI
+        while k <= t
+            better = false
+            if dir == 1 and low[t - k] < low[t - oi]
+                better := true
+            if dir == -1 and high[t - k] > high[t - oi]
+                better := true
+            if better
+                oi := k
+            k += 1
+        dI = -1
+        k := oi
+        while k <= t
+            body = close[t - k] - open[t - k]
+            sgn = 1
+            if body <= 0
+                sgn := -1
+            if math.abs(body) >= dispK * atrv[t - k] and sgn == dir
+                dI := k
+                break
+            k += 1
+        typ = 0
+        if trend == -dir
+            typ := 1
+        array.push(eK, t)
+        array.push(eD, dir)
+        array.push(eT, typ)
+        array.push(eOi, oi)
+        array.push(eDisp, dI)
+        trend := dir
+        if dir == 1
+            lhBr := true
+        else
+            llBr := true
+
+// prune
+while array.size(pI) > 0 and array.get(pI, 0) < t - winBars - 10
+    array.remove(pP, 0)
+    array.remove(pI, 0)
+    array.remove(pSide, 0)
+    array.remove(pSt, 0)
+    array.remove(pJ, 0)
+while array.size(fCr) > 0 and array.get(fCr, 0) < t - winBars - 10
+    array.remove(fD, 0)
+    array.remove(fTop, 0)
+    array.remove(fBot, 0)
+    array.remove(fCE, 0)
+    array.remove(fCr, 0)
+    array.remove(fFill, 0)
+    array.remove(fCeAt, 0)
+while array.size(eK) > 80
+    array.remove(eK, 0)
+    array.remove(eD, 0)
+    array.remove(eT, 0)
+    array.remove(eOi, 0)
+    array.remove(eDisp, 0)
+
+// ---------------- ICT helpers ----------------
+f_evFvg(x) =>
+    d = array.get(eD, x)
+    oi = array.get(eOi, x)
+    k = array.get(eK, x)
+    res = -1
+    n = array.size(fD)
+    y = 0
+    while y < n
+        cr = array.get(fCr, y)
+        if array.get(fD, y) == d and cr >= oi and cr <= k + 1 and cr >= winStart + 2
+            res := y
+            break
+        y += 1
+    res
+
+f_event(d) =>
+    res = -1
+    first = -1
+    x = array.size(eK) - 1
+    while x >= 0
+        if array.get(eD, x) == d and t - array.get(eK, x) <= trigWin and array.get(eK, x) >= winStart
+            if first == -1
+                first := x
+            if array.get(eDisp, x) >= 0 and f_evFvg(x) >= 0
+                res := x
+                break
+        x -= 1
+    if res == -1
+        res := first
+    res
+
+f_pre(d) =>
+    ok = false
+    e = f_event(d)
+    if e >= 0
+        g = f_evFvg(e)
+        if g >= 0 and array.get(eDisp, e) >= 0
+            if array.get(fFill, g) == -1 and array.get(fCeAt, g) == -1
+                ok := true
+    ok
+
+// returns [status (1 signal, 0 wait, -1 fail), entry, stop, target, rr, fvg key, text]
+f_ict(d, inv, invOk, wsI, wsP, useWs) =>
+    st = -1
+    entry = 0.0
+    stop = 0.0
+    target = 0.0
+    rr = 0.0
+    fkey = -1
+    sBar = -1
+    sPool = -1
+    txt = "no MSS/BOS in trend direction"
+    e = f_event(d)
+    if e >= 0
+        oi = array.get(eOi, e)
+        k = array.get(eK, e)
+        sw = -1
+        swJ = -1
+        swP = 0.0
+        n = array.size(pP)
+        y = 0
+        while y < n
+            if array.get(pSt, y) == 1 and array.get(pSide, y) == -d and array.get(pI, y) >= winStart
+                j = array.get(pJ, y)
+                if j >= oi - sweepWin and j <= k and j > swJ
+                    sw := y
+                    swJ := j
+            y += 1
+        if sw >= 0
+            swP := array.get(pP, sw)
+            sBar := swJ
+            sPool := array.get(pI, sw)
+        wOk = useWs and sw == -1 and wsI >= oi - sweepWin and wsI <= k
+        g = f_evFvg(e)
+        if sw == -1 and not wOk
+            txt := "no sweep before the move"
+        else if array.get(eDisp, e) < 0 or g < 0
+            txt := "no displacement / FVG"
+        else
+            entry := array.get(fCE, g)
+            fkey := array.get(fCr, g)
+            ext = low[t - oi]
+            if d == 1
+                if sw >= 0
+                    ext := math.min(ext, swP)
+                if wOk
+                    ext := math.min(ext, wsP)
+            else
+                ext := high[t - oi]
+                if sw >= 0
+                    ext := math.max(ext, swP)
+                if wOk
+                    ext := math.max(ext, wsP)
+            stop := ext - d * 0.1 * atrv
+            if invOk and d * (entry - inv) > 0 and d * (inv - stop) > 0
+                stop := inv - d * 0.1 * atrv
+            lo = low
+            hi = high
+            j2 = oi
+            while j2 <= t
+                lo := math.min(lo, low[t - j2])
+                hi := math.max(hi, high[t - j2])
+                j2 += 1
+            if sw >= 0
+                lo := math.min(lo, swP)
+                hi := math.max(hi, swP)
+            pos = (entry - lo) / math.max(1e-9, hi - lo)
+            locOk = (d == 1 and pos < 0.5) or (d == -1 and pos > 0.5)
+            refP = math.max(entry, close)
+            if d == -1
+                refP := math.min(entry, close)
+            tgtOk = false
+            y := 0
+            while y < n
+                if array.get(pSt, y) == 0 and array.get(pSide, y) == d and array.get(pI, y) >= winStart
+                    pp = array.get(pP, y)
+                    if d * (pp - refP) > 0
+                        if not tgtOk or d * (pp - target) < 0
+                            target := pp
+                            tgtOk := true
+                y += 1
+            if not tgtOk
+                edge = hi
+                if d == -1
+                    edge := lo
+                if d * (edge - entry) > 0
+                    target := edge
+                    tgtOk := true
+            if tgtOk
+                rr := math.abs(target - entry) / math.abs(entry - stop)
+            if not locOk
+                txt := "CE on the wrong side of the dealing range"
+            else if array.get(fFill, g) >= 0
+                txt := "FVG already filled"
+            else if not tgtOk
+                txt := "no liquidity target"
+            else if rr < minRR
+                txt := "R:R " + str.tostring(rr, "#.##") + " below minimum"
+            else if array.get(fCeAt, g) >= 0
+                st := 0
+                txt := "CE already traded"
+            else
+                st := 1
+                txt := "limit at CE, R:R " + str.tostring(rr, "#.##")
+    [st, entry, stop, target, rr, fkey, txt, sBar, sPool]
+
+// ---------------- Wyckoff ----------------
+f_swings(n, Lb) =>
+    array.clear(sI)
+    array.clear(sP)
+    array.clear(sT)
+    array.clear(lMap)
+    z = 0
+    while z < n
+        array.push(lMap, -1)
+        z += 1
+    i = Lb
+    while i < n - Lb
+        isH = true
+        isL = true
+        hi0 = array.get(mH, i)
+        li0 = array.get(mL, i)
+        j = i - Lb
+        while j <= i + Lb
+            if j != i
+                hj = array.get(mH, j)
+                lj = array.get(mL, j)
+                if j < i
+                    if hj >= hi0
+                        isH := false
+                    if lj <= li0
+                        isL := false
+                else
+                    if hj > hi0
+                        isH := false
+                    if lj < li0
+                        isL := false
+            j += 1
+        if isH
+            array.push(sI, i)
+            array.push(sP, hi0)
+            array.push(sT, 1)
+        if isL
+            array.push(sI, i)
+            array.push(sP, li0)
+            array.push(sT, -1)
+            array.set(lMap, i, array.size(sI) - 1)
+        i += 1
+    array.size(sI)
+
+f_vAt(i, last) =>
+    math.max(array.get(wR, math.max(0, i - 1)), math.max(array.get(wR, i), array.get(wR, math.min(last, i + 1))))
+
+// returns [ok, phase(0A 1B 2C 3D 4E 5fail), status(0 open 1 markup 2 failed), endI, springI, springP, test, testPass, testFail, sos, lps, noSpringC]
+f_buildRange(n, climaxI, scI) =>
+    last = n - 1
+    Lb = math.max(2, swingLen)
+    ns = array.size(sI)
+    ar = -1
+    s = 0
+    while s < ns
+        si = array.get(sI, s)
+        if array.get(sT, s) == 1 and si > scI and si <= scI + 40
+            ar := s
+            break
+        s += 1
+    ok = false
+    phase = 0
+    status = 0
+    endI = last
+    springI = -1
+    springP = 0.0
+    test = false
+    testPass = false
+    testFail = false
+    sos = false
+    lps = false
+    noSpringC = false
+    if ar >= 0
+        bottom = array.get(mL, scI)
+        top = array.get(sP, ar)
+        H = top - bottom
+        if H >= 2 * array.get(wA, scI)
+            arI = array.get(sI, ar)
+            spring = false
+            springV = 0.0
+            sosI = -1
+            broke = false
+            k = arI + 1
+            while k <= last
+                nextK = k + 1
+                piv = k - Lb
+                if piv > arI
+                    sx = array.get(lMap, piv)
+                    if sx >= 0
+                        p = array.get(sP, sx)
+                        if not spring and not sos and p >= bottom - 0.02 * H and p <= bottom + 0.35 * H and phase <= 1
+                            if phase == 0
+                                phase := 1
+                        if spring and not test and piv > springI and piv <= springI + 25
+                            v = f_vAt(piv, last)
+                            test := true
+                            if p > springP
+                                testPass := v <= springV * 1.05 or v < 1
+                            else
+                                testFail := true
+                        if sos and piv > sosI and not lps and p > bottom + 0.5 * H
+                            lps := true
+                rest = true
+                if phase <= 1 and not spring and not sos
+                    lk = array.get(mL, k)
+                    if lk < bottom - 0.1 * array.get(wA, k)
+                        if phase == 0
+                            bottom := lk
+                            H := top - bottom
+                            rest := false
+                        else
+                            depth = bottom - lk
+                            rec = -1
+                            j = k
+                            while j <= math.min(k + 3, last)
+                                if array.get(mC, j) >= bottom
+                                    rec := j
+                                    break
+                                j += 1
+                            if rec >= 0 and depth <= 0.6 * H
+                                lo = k
+                                j2 = k
+                                while j2 <= rec
+                                    if array.get(mL, j2) < array.get(mL, lo)
+                                        lo := j2
+                                    j2 += 1
+                                spring := true
+                                springI := lo
+                                springP := array.get(mL, lo)
+                                springV := array.get(wR, lo)
+                                phase := 2
+                                nextK := rec + 1
+                                rest := false
+                            else if rec < 0 and k + 3 <= last
+                                status := 2
+                                phase := 5
+                                endI := k
+                                broke := true
+                                rest := false
+                if rest
+                    cK = array.get(mC, k)
+                    if not sos and phase != 0 and cK > top and cK > array.get(mO, k) and array.get(mH, k) - array.get(mL, k) >= 0.9 * array.get(wA, k) and array.get(wR, k) >= 1.2
+                        sos := true
+                        sosI := k
+                        if not spring
+                            s2 = 0
+                            while s2 < ns
+                                if array.get(sT, s2) == -1 and array.get(sI, s2) > arI and array.get(sI, s2) < k and array.get(sP, s2) > bottom
+                                    noSpringC := true
+                                s2 += 1
+                        phase := 3
+                    if sos and cK > top + H
+                        phase := 4
+                        status := 1
+                        endI := k
+                        broke := true
+                    else if sos and cK < bottom
+                        status := 2
+                        phase := 5
+                        endI := k
+                        broke := true
+                if broke
+                    break
+                k := nextK
+            if not (endI - climaxI < 15 and status == 0)
+                ok := true
+    [ok, phase, status, endI, springI, springP, test, testPass, testFail, sos, lps, noSpringC]
+
+// returns best range for one hypothesis: [ok, climaxI, phase, status, endI, springI, springP, test, testPass, testFail, lps, noSpringC]
+f_acc(sign, n) =>
+    array.clear(mO)
+    array.clear(mH)
+    array.clear(mL)
+    array.clear(mC)
+    i = 0
+    while i < n
+        if sign == 1
+            array.push(mO, array.get(wO, i))
+            array.push(mH, array.get(wH, i))
+            array.push(mL, array.get(wL, i))
+            array.push(mC, array.get(wC, i))
+        else
+            array.push(mO, -array.get(wO, i))
+            array.push(mH, -array.get(wL, i))
+            array.push(mL, -array.get(wH, i))
+            array.push(mC, -array.get(wC, i))
+        i += 1
+    f_swings(n, math.max(2, swingLen))
+    last = n - 1
+    bOk = false
+    bCl = -1
+    bPh = 0
+    bSt = 0
+    bEnd = -1
+    bSpI = -1
+    bSpP = 0.0
+    bTe = false
+    bTp = false
+    bTf = false
+    bLp = false
+    bNs = false
+    i := math.max(30, last - wyLook)
+    while i <= last - 12
+        nextI = i + 1
+        if array.get(wR, i) >= climaxVol and array.get(mH, i) - array.get(mL, i) >= 1.1 * array.get(wA, i)
+            minPrior = array.get(mL, i - 30)
+            j = i - 30
+            while j < i
+                minPrior := math.min(minPrior, array.get(mL, j))
+                j += 1
+            scI = i
+            j := i
+            while j <= math.min(i + 3, last)
+                if array.get(mL, j) < array.get(mL, scI)
+                    scI := j
+                j += 1
+            if array.get(mL, scI) <= minPrior + 0.2 * array.get(wA, i) and array.get(mC, i - 30) - array.get(mL, scI) >= 3 * array.get(wA, i)
+                [rOk, rPh, rSt, rEnd, rSpI, rSpP, rTe, rTp, rTf, rSo, rLp, rNs] = f_buildRange(n, i, scI)
+                if rOk
+                    bOk := true
+                    bCl := i
+                    bPh := rPh
+                    bSt := rSt
+                    bEnd := rEnd
+                    bSpI := rSpI
+                    bSpP := rSpP
+                    bTe := rTe
+                    bTp := rTp
+                    bTf := rTf
+                    bLp := rLp
+                    bNs := rNs
+                    nextI := rEnd + 1
+        i := nextI
+    [bOk, bCl, bPh, bSt, bEnd, bSpI, bSpP, bTe, bTp, bTf, bLp, bNs]
+
+// ---------------- Elliott ----------------
+f_zzPush(i, p, tp) =>
+    array.push(zI, i)
+    array.push(zP, p)
+    array.push(zT, tp)
+    0
+
+f_zigzag(n) =>
+    array.clear(zI)
+    array.clear(zP)
+    array.clear(zT)
+    dir = 0
+    hiI = 0
+    loI = 0
+    hiP = array.get(wH, 0)
+    loP = array.get(wL, 0)
+    i = 1
+    while i < n
+        th = zzK * array.get(wA, i)
+        h = array.get(wH, i)
+        l = array.get(wL, i)
+        if dir != -1 and h > hiP
+            hiP := h
+            hiI := i
+        if dir != 1 and l < loP
+            loP := l
+            loI := i
+        if dir == 0
+            if hiP - l >= th and hiI < i
+                if loI < hiI
+                    f_zzPush(loI, loP, -1)
+                f_zzPush(hiI, hiP, 1)
+                dir := -1
+                loP := l
+                loI := i
+            else if h - loP >= th and loI < i
+                if hiI < loI
+                    f_zzPush(hiI, hiP, 1)
+                f_zzPush(loI, loP, -1)
+                dir := 1
+                hiP := h
+                hiI := i
+        else if dir == 1
+            if hiP - l >= th
+                f_zzPush(hiI, hiP, 1)
+                dir := -1
+                loP := l
+                loI := i
+        else
+            if h - loP >= th
+                f_zzPush(loI, loP, -1)
+                dir := 1
+                hiP := h
+                hiI := i
+        i += 1
+    nz0 = array.size(zI)
+    if dir == 1
+        if nz0 == 0 or array.get(zI, nz0 - 1) != hiI
+            f_zzPush(hiI, hiP, 1)
+    if dir == -1
+        if nz0 == 0 or array.get(zI, nz0 - 1) != loI
+            f_zzPush(loI, loP, -1)
+    k = 1
+    while k < array.size(zI) - 1
+        if array.get(zI, k) == array.get(zI, k + 1) and k + 2 < array.size(zI)
+            array.remove(zI, k)
+            array.remove(zP, k)
+            array.remove(zT, k)
+            array.remove(zI, k)
+            array.remove(zP, k)
+            array.remove(zT, k)
+            k -= 1
+        k += 1
+    array.size(zI)
+
+f_segOK(a, c) =>
+    ok = true
+    if array.get(qT, a) == array.get(qT, c)
+        ok := false
+    else
+        hi = math.max(array.get(qP, a), array.get(qP, c))
+        lo = math.min(array.get(qP, a), array.get(qP, c))
+        j = a + 1
+        while j < c
+            pj = array.get(qP, j)
+            if pj > hi or pj < lo
+                ok := false
+                break
+            j += 1
+    ok
+
+f_enum(K) =>
+    array.clear(sqIdx)
+    array.clear(sqM)
+    array.clear(sqOff)
+    off = 0
+    while off <= 4
+        e = K - 1 - off
+        if e >= 2
+            m = 3
+            while m <= 6
+                array.set(chain, 0, e)
+                depth = 1
+                array.set(ptr, 1, e - 1)
+                while depth > 0
+                    if depth == m
+                        x = 0
+                        while x < 6
+                            if x < m
+                                array.push(sqIdx, array.get(chain, m - 1 - x))
+                            else
+                                array.push(sqIdx, -1)
+                            x += 1
+                        array.push(sqM, m)
+                        array.push(sqOff, off)
+                        depth -= 1
+                    else
+                        j = array.get(ptr, depth)
+                        cur = array.get(chain, depth - 1)
+                        found = -1
+                        while j >= 0
+                            if f_segOK(j, cur)
+                                found := j
+                                break
+                            j -= 1
+                        if found >= 0
+                            array.set(chain, depth, found)
+                            array.set(ptr, depth, found - 1)
+                            depth += 1
+                            array.set(ptr, depth, found - 1)
+                        else
+                            depth -= 1
+                m += 1
+        off += 1
+    array.size(sqM)
+
+f_len(a, c) =>
+    r = math.abs(c - a)
+    if wAllPos
+        r := math.abs(math.log(c / a))
+    r
+
+f_er(i0, i1) =>
+    path = array.get(wCum, i1) - array.get(wCum, i0)
+    r = 0.0
+    if path > 0
+        r := math.abs(array.get(wC, i1) - array.get(wC, i0)) / path
+    r
+
+f_startExt(i, p, d) =>
+    ok = true
+    k = math.max(0, i - 20)
+    while k < i
+        if (d == 1 and array.get(wL, k) < p) or (d == -1 and array.get(wH, k) > p)
+            ok := false
+            break
+        k += 1
+    ok
+
+f_closeExt(i0, i1, d) =>
+    m = array.get(wC, i0)
+    i = i0
+    while i <= i1
+        if d == 1
+            m := math.min(m, array.get(wC, i))
+        else
+            m := math.max(m, array.get(wC, i))
+        i += 1
+    m
+
+f_sgn(x) =>
+    r = 0
+    if x > 0
+        r := 1
+    if x < 0
+        r := -1
+    r
+
+// returns [have, dir, inv, invOk, code]  code: 0 none, 1 impulse w3, 2 w4, 3 w5, 4 5-done, 5 ABC done, 6 in C
+f_elliott(n) =>
+    have = false
+    edir = 0
+    einv = 0.0
+    einvOk = false
+    code = 0
+    nzz = f_zigzag(n)
+    last = n - 1
+    cl = array.get(wC, last)
+    K = math.min(nzz, 16)
+    base = nzz - K
+    array.clear(qI)
+    array.clear(qP)
+    array.clear(qT)
+    kq = 0
+    while kq < K
+        array.push(qI, array.get(zI, base + kq))
+        array.push(qP, array.get(zP, base + kq))
+        array.push(qT, array.get(zT, base + kq))
+        kq += 1
+    array.clear(cKind)
+    array.clear(cM)
+    array.clear(cD)
+    array.clear(cOff)
+    array.clear(cSpan)
+    array.clear(cScore)
+    array.clear(cInv)
+    array.clear(cInvOk)
+    bestScore = -1e9
+    if K >= 3
+        nseq = f_enum(K)
+        s = 0
+        while s < nseq
+            m = array.get(sqM, s)
+            off = array.get(sqOff, s)
+            b6 = s * 6
+            i0 = array.get(qI, array.get(sqIdx, b6))
+            i1 = array.get(qI, array.get(sqIdx, b6 + 1))
+            i2 = array.get(qI, array.get(sqIdx, b6 + 2))
+            p0 = array.get(qP, array.get(sqIdx, b6))
+            p1 = array.get(qP, array.get(sqIdx, b6 + 1))
+            p2 = array.get(qP, array.get(sqIdx, b6 + 2))
+            i3 = i2
+            p3 = p2
+            i4 = i2
+            p4 = p2
+            i5 = i2
+            p5 = p2
+            if m >= 4
+                i3 := array.get(qI, array.get(sqIdx, b6 + 3))
+                p3 := array.get(qP, array.get(sqIdx, b6 + 3))
+            if m >= 5
+                i4 := array.get(qI, array.get(sqIdx, b6 + 4))
+                p4 := array.get(qP, array.get(sqIdx, b6 + 4))
+            if m >= 6
+                i5 := array.get(qI, array.get(sqIdx, b6 + 5))
+                p5 := array.get(qP, array.get(sqIdx, b6 + 5))
+            iLast = i2
+            if m == 4
+                iLast := i3
+            if m == 5
+                iLast := i4
+            if m == 6
+                iLast := i5
+            d = f_sgn(p1 - p0)
+            // ---- impulse ----
+            dead = false
+            got = 0.0
+            poss = 0.0
+            inv = 0.0
+            invOk = false
+            if d * (p2 - p0) <= 0
+                dead := true
+            if m >= 4 and d * (p3 - p1) <= 0
+                dead := true
+            if m >= 5
+                ov = false
+                if closeBasis
+                    ov := d * (f_closeExt(i3, i4, d) - p1) <= 0
+                else
+                    ov := d * (p4 - p1) <= 0
+                if ov
+                    dead := true
+            L1 = f_len(p0, p1)
+            L3 = 0.0
+            L5 = 0.0
+            if m >= 4
+                L3 := f_len(p2, p3)
+            if m >= 6
+                L5 := f_len(p4, p5)
+            if m == 6 and L3 < L1 and L3 < L5
+                dead := true
+            if off > 0
+                a = K - off
+                while a < K
+                    pa = array.get(qP, a)
+                    if m == 3 and d * (pa - p0) <= 0
+                        dead := true
+                    if m == 3 and off > 1 and d * (pa - p2) <= 0
+                        dead := true
+                    if m == 4 and d * (pa - p1) <= 0
+                        dead := true
+                    if m == 4 and d * (pa - p3) > 0
+                        dead := true
+                    if m == 5 and L3 < L1 and d * (pa - p4) > 0 and f_len(p4, pa) > L3
+                        dead := true
+                    if m == 5 and d * (pa - p4) < 0
+                        dead := true
+                    a += 1
+                if m == 6 and off > 2
+                    dead := true
+            w1 = math.abs(p1 - p0)
+            r2 = math.abs(p2 - p1) / w1
+            poss += 1
+            if r2 >= 0.382 and r2 <= 0.786
+                got += 1
+            if m >= 4
+                r3 = math.abs(p3 - p2) / w1
+                poss += 1
+                if r3 >= 1.618
+                    got += 1
+                else if r3 >= 1
+                    got += 0.5
+            if m >= 5
+                r4 = math.abs(p4 - p3) / math.abs(p3 - p2)
+                poss += 1
+                if r4 >= 0.236 and r4 <= 0.5
+                    got += 1
+                tr = (i4 - i3) / math.max(1.0, (i2 - i1) * 1.0)
+                poss += 1
+                if math.abs(r2 - r4) >= 0.15 or tr >= 1.5 or tr <= 0.67
+                    got += 1
+            if m == 6
+                r5 = math.abs(p5 - p4) / w1
+                poss += 1
+                if r5 >= 0.618 and r5 <= 1.618
+                    got += 1
+            mn = math.abs(p1 - p0)
+            mx = mn
+            l2 = math.abs(p2 - p1)
+            mn := math.min(mn, l2)
+            mx := math.max(mx, l2)
+            if m >= 4
+                l3 = math.abs(p3 - p2)
+                mn := math.min(mn, l3)
+                mx := math.max(mx, l3)
+            if m >= 5
+                l4 = math.abs(p4 - p3)
+                mn := math.min(mn, l4)
+                mx := math.max(mx, l4)
+            if m >= 6
+                l5 = math.abs(p5 - p4)
+                mn := math.min(mn, l5)
+                mx := math.max(mx, l5)
+            poss += 1
+            if mx > 0 and mn / mx >= 0.12
+                got += 1
+            am = f_er(i0, i1)
+            ac = f_er(i1, i2)
+            nm = 1
+            nc = 1
+            if m >= 4
+                am += f_er(i2, i3)
+                nm += 1
+            if m >= 5
+                ac += f_er(i3, i4)
+                nc += 1
+            poss += 2
+            if am / nm > ac / nc
+                got += 2
+            poss += 1
+            if f_startExt(i0, p0, d)
+                got += 1
+            score = got / poss + 0.04 * m - 0.04 * math.max(0, off - 1)
+            if m == 3
+                inv := p0
+                invOk := true
+            if m == 4 or m == 5
+                inv := p1
+                invOk := true
+            if invOk and not dead and d * (cl - inv) <= 0
+                dead := true
+            if not dead
+                array.push(cKind, 0)
+                array.push(cM, m)
+                array.push(cD, d)
+                array.push(cOff, off)
+                array.push(cSpan, iLast - i0)
+                array.push(cScore, score)
+                array.push(cInv, inv)
+                array.push(cInvOk, invOk)
+                bestScore := math.max(bestScore, score)
+            // ---- ABC ----
+            if m <= 4
+                deadA = false
+                gotA = 0.0
+                possA = 0.0
+                invA = 0.0
+                invAOk = false
+                A1 = math.abs(p1 - p0)
+                rB = math.abs(p2 - p1) / A1
+                if rB > 1.382
+                    deadA := true
+                zig = rB <= 0.9
+                possA += 1
+                if zig
+                    if rB >= 0.382 and rB <= 0.786
+                        gotA += 1
+                else if rB <= 1.05
+                    gotA += 1
+                idx0 = array.get(sqIdx, b6)
+                prv = -1
+                jj = idx0 - 1
+                while jj >= 0
+                    if f_segOK(jj, idx0)
+                        if prv < 0 or math.abs(array.get(qP, jj) - p0) > math.abs(array.get(qP, prv) - p0)
+                            prv := jj
+                    jj -= 1
+                possA += 1
+                if prv >= 0
+                    if f_sgn(p0 - array.get(qP, prv)) == -d and math.abs(p0 - array.get(qP, prv)) >= A1
+                        gotA += 1
+                    ep = f_er(array.get(qI, prv), i0)
+                    ea = f_er(i0, iLast)
+                    possA += 2
+                    if ep > ea
+                        gotA += 2
+                if m == 4
+                    if zig and d * (p3 - p1) <= 0
+                        deadA := true
+                    rC = math.abs(p3 - p2) / A1
+                    possA += 1
+                    if rC >= 0.618 and rC <= 1.618
+                        gotA += 1
+                    if d * (cl - p3) > 0
+                        deadA := true
+                else
+                    invA := p0 + (-d) * 0.382 * A1
+                    invAOk := true
+                scoreA = gotA / possA + 0.04 * m - 0.05 - 0.04 * math.max(0, off - 1)
+                if off > 1 and m == 4
+                    deadA := true
+                if not deadA
+                    array.push(cKind, 1)
+                    array.push(cM, m)
+                    array.push(cD, d)
+                    array.push(cOff, off)
+                    array.push(cSpan, iLast - i0)
+                    array.push(cScore, scoreA)
+                    array.push(cInv, invA)
+                    array.push(cInvOk, invAOk)
+                    bestScore := math.max(bestScore, scoreA)
+            s += 1
+    nc0 = array.size(cKind)
+    if nc0 > 0
+        mj = -1
+        c = 0
+        while c < nc0
+            skip = array.get(cScore, c) < bestScore - 0.3 or (array.get(cKind, c) == 1 and array.get(cM, c) == 3)
+            if not skip
+                if mj < 0
+                    mj := c
+                else if array.get(cSpan, c) > array.get(cSpan, mj) or (array.get(cSpan, c) == array.get(cSpan, mj) and array.get(cScore, c) > array.get(cScore, mj))
+                    mj := c
+            c += 1
+        if mj >= 0
+            have := true
+            einv := array.get(cInv, mj)
+            einvOk := array.get(cInvOk, mj)
+            kd = array.get(cKind, mj)
+            m2 = array.get(cM, mj)
+            d2 = array.get(cD, mj)
+            if kd == 0
+                if m2 == 6
+                    code := 4
+                else
+                    edir := d2
+                    code := m2 - 2
+            else
+                if m2 == 4
+                    edir := -d2
+                    code := 5
+                else
+                    code := 6
+    [have, edir, einv, einvOk, code]
+
+// ---------------- orders bookkeeping ----------------
+posNow = strategy.position_size
+if posNow != 0 and prevPos == 0
+    entryBar := t
+    beDone := false
+    posEntry := strategy.position_avg_price
+    cvdEntry := cvd
+hasPos = posNow != 0
+// CVD trailing (e-book): when CVD turns against the open trade, move the stop to break-even
+if hasPos and cvdTrail and not beDone and t > entryBar
+    longPos = posNow > 0
+    against = (longPos and cvd < cvdEntry) or (not longPos and cvd > cvdEntry)
+    inProfit = (longPos and close > posEntry) or (not longPos and close < posEntry)
+    if against and inProfit
+        strategy.exit("CDx", "CD", stop=posEntry, limit=posTgt, comment_loss="BE (CVD)")
+        posStop := posEntry
+        showS := posEntry
+        beDone := true
+// footprint zone watch: wait for price to reach the zone, then enter only on confirmation
+if wDir != 0 and not hasPos
+    expiredW = t - wBar > expiryBars
+    invalidW = (wDir == 1 and close <= wStop) or (wDir == -1 and close >= wStop)
+    touchNow = (wDir == 1 and low <= wCE) or (wDir == -1 and high >= wCE)
+    tgtFirst = not wTouched and not touchNow and ((wDir == 1 and high >= wTgt) or (wDir == -1 and low <= wTgt))
+    if expiredW or invalidW or tgtFirst
+        txt4 := expiredW ? "zone not confirmed in time" : invalidW ? "closed beyond stop - setup dead" : "target hit before zone"
+        st4 := -1
+        wDir := 0
+    else if t > wBar
+        if touchNow
+            wTouched := true
+        if wTouched
+            conf = wDir == 1 ? confL : confS
+            if not fpOk
+                txt4 := "in zone, no footprint data on this bar"
+                st4 := 0
+            else if conf and (not needDiv or wDiv)
+                rrNow = math.abs(wTgt - close) / math.max(syminfo.mintick, math.abs(close - wStop))
+                if rrNow >= fpMinRR
+                    riskPer = math.abs(close - wStop) * syminfo.pointvalue
+                    qty = 0.0
+                    if riskPer > 0
+                        qty := strategy.equity * riskPct / 100 / riskPer
+                    if qty > 0
+                        how = wDir == 1 ? (aggL and okAgg ? "aggressive buyers" : "absorption / big bid") : (aggS and okAgg ? "aggressive sellers" : "absorption / big offer")
+                        strategy.entry("CD", wDir == 1 ? strategy.long : strategy.short, qty=qty, comment=how)
+                        strategy.exit("CDx", "CD", stop=wStop, limit=wTgt)
+                        whSignal(wDir == 1 ? "buy" : "sell", close, wStop, wTgt, how)
+                        posStop := wStop
+                        posTgt := wTgt
+                        txt4 := "confirmed: " + how
+                        st4 := 1
+                        wDir := 0
+                else
+                    txt4 := "confirmed but R:R " + str.tostring(rrNow, "#.##") + " too low"
+                    st4 := 0
+            else
+                txt4 := "in zone, waiting for footprint"
+                st4 := 0
+if hasPos
+    wDir := 0
+if hasPos
+    pendBar := -1
+else if pendBar >= 0
+    expired = t - pendBar > expiryBars
+    reached = (pendDir == 1 and high >= pendTP) or (pendDir == -1 and low <= pendTP)
+    if expired or reached
+        strategy.cancel("CD")
+        whSignal("cancel", 0.0, 0.0, 0.0, expired ? "expired" : "target reached")
+        pendBar := -1
+if hasPos and maxHold > 0 and entryBar >= 0 and t - entryBar >= maxHold
+    strategy.close("CD", comment="max hold")
+    whSignal("close", 0.0, 0.0, 0.0, "max hold")
+if not hasPos and pendBar < 0 and wDir == 0
+    showE := na
+    showS := na
+    showT := na
+
+// ---------------- evaluation ----------------
+canEval = not hasPos and pendBar < 0 and wDir == 0 and t >= 150
+pre1 = false
+preM1 = false
+if canEval or barstate.islast
+    pre1 := f_pre(1)
+    preM1 := f_pre(-1)
+needFull = (canEval and (pre1 or preM1)) or (barstate.islast and showPanel)
+sigOK = false
+sigDir = 0
+sigE = 0.0
+sigS = 0.0
+sigT = 0.0
+sigKey = -1
+sigSB = -1
+sigSP = -1
+if needFull
+    // build the analysis window
+    n = math.min(winBars, t + 1)
+    array.clear(wO)
+    array.clear(wH)
+    array.clear(wL)
+    array.clear(wC)
+    array.clear(wV)
+    array.clear(wA)
+    array.clear(wR)
+    array.clear(wCum)
+    wAllPos := true
+    hasVol = false
+    kk = 0
+    while kk < n
+        off = n - 1 - kk
+        array.push(wO, open[off])
+        array.push(wH, high[off])
+        array.push(wL, low[off])
+        array.push(wC, close[off])
+        vv = nz(volume[off])
+        array.push(wV, vv)
+        if vv > 0
+            hasVol := true
+        if low[off] <= 0
+            wAllPos := false
+        kk += 1
+    a = 0.0
+    sumV = 0.0
+    cum = 0.0
+    kk := 0
+    while kk < n
+        hk = array.get(wH, kk)
+        lk = array.get(wL, kk)
+        tr = hk - lk
+        if kk > 0
+            cp = array.get(wC, kk - 1)
+            tr := math.max(hk - lk, math.max(math.abs(hk - cp), math.abs(lk - cp)))
+            cum += math.abs(array.get(wC, kk) - cp)
+        if kk < 14
+            a := (a * kk + tr) / (kk + 1)
+        else
+            a := (a * 13 + tr) / 14
+        array.push(wA, math.max(a, 1e-12))
+        array.push(wCum, cum)
+        sumV += array.get(wV, kk)
+        if kk >= 20
+            sumV -= array.get(wV, kk - 20)
+        mv = sumV / math.min(kk + 1, 20)
+        rv = 1.0
+        if hasVol and mv > 0
+            rv := array.get(wV, kk) / mv
+        array.push(wR, rv)
+        kk += 1
+    // Wyckoff: accumulation and distribution hypotheses
+    [aOk, aCl, aPh, aSt, aEnd, aSpI, aSpP, aTe, aTp, aTf, aLp, aNs] = f_acc(1, n)
+    [dOk, dCl, dPh, dSt, dEnd, dSpI, dSpP, dTe, dTp, dTf, dLp, dNs] = f_acc(-1, n)
+    wyType = 0
+    useD = false
+    if aOk and dOk
+        accOlder = aCl <= dCl
+        oSt = aSt
+        oEnd = aEnd
+        nCl = dCl
+        nSt = dSt
+        if not accOlder
+            oSt := dSt
+            oEnd := dEnd
+            nCl := aCl
+            nSt := aSt
+        inside = oSt != 2 and nCl <= oEnd + 3
+        if inside or nSt == 2
+            wyType := accOlder ? 1 : -1
+        else
+            wyType := accOlder ? -1 : 1
+    else if aOk
+        wyType := 1
+    else if dOk
+        wyType := -1
+    useD := wyType == -1
+    wPh = useD ? dPh : aPh
+    wSt = useD ? dSt : aSt
+    wSpI = useD ? dSpI : aSpI
+    wSpP = useD ? -dSpP : aSpP
+    wSpring = wSpI >= 0
+    wTe = useD ? dTe : aTe
+    wTp = useD ? dTp : aTp
+    wTf = useD ? dTf : aTf
+    wLp = useD ? dLp : aLp
+    wNs = useD ? dNs : aNs
+    // Elliott
+    [eHave, eDir, eInv, eInvOk, eCode] = f_elliott(n)
+    // layer 1
+    dir = eDir
+    inv = eInv
+    invOk = eInvOk
+    if MODE == 2
+        dir := trend
+        invOk := false
+    s1 = 0
+    if dir != 0
+        s1 := 1
+    else if not eHave
+        s1 := -1
+    t1 = "no valid count"
+    if MODE == 2
+        t1 := "ICT order flow " + (dir == 1 ? "up" : dir == -1 ? "down" : "-")
+    else if eHave
+        t1 := eCode == 1 ? "impulse, wave 3" : eCode == 2 ? "impulse, wave 4" : eCode == 3 ? "impulse, wave 5" : eCode == 4 ? "5 waves done - wait for C" : eCode == 5 ? "ABC done - trend resumes" : "in wave C - wait"
+        if dir != 0
+            t1 := (dir == 1 ? "UP: " : "DOWN: ") + t1
+    // layer 2
+    s2 = 0
+    t2 = "-"
+    if dir == 0
+        t2 := "no direction"
+    else if MODE != 0
+        s2 := 1
+        t2 := "skipped (comparison mode)"
+    else if wyType == 0
+        t2 := "no readable range"
+    else if wyType != dir
+        s2 := (wPh >= 2 and wPh <= 4 and wSt != 2) ? -1 : 0
+        t2 := "range is " + (wyType == 1 ? "accumulation" : "distribution") + " - against trend"
+    else if wSt == 2
+        s2 := -1
+        t2 := "range failed"
+    else if wTf
+        s2 := -1
+        t2 := "test failed - supply still present"
+    else if wPh <= 1
+        t2 := wPh == 0 ? "Phase A - building cause" : "Phase B - building cause"
+    else if wPh == 2 and not (wTp or (not wTe and wNs and wLp))
+        t2 := "Phase C - waiting for test"
+    else if wPh == 4
+        t2 := "Phase E - do not chase"
+    else
+        s2 := 1
+        t2 := (dir == 1 ? "accumulation" : "distribution") + (wPh == 2 ? " Phase C" : " Phase D")
+    // layer 3
+    s3 = 0
+    t3 = "waiting for layers above"
+    if dir != 0 and s2 == 1
+        [r3, rE, rS, rT, rR, rK, rTxt, rSB, rSP] = f_ict(dir, inv, invOk, wSpring and wyType == dir ? wSpI + t - n + 1 : -999999, wSpP, wSpring and wyType == dir)
+        s3 := r3
+        t3 := rTxt
+        if s1 == 1 and r3 == 1
+            sigOK := true
+            sigDir := dir
+            sigE := rE
+            sigS := rS
+            sigT := rT
+            sigKey := rK
+            sigSB := rSB
+            sigSP := rSP
+    st1 := s1
+    st2 := s2
+    st3 := s3
+    txt1 := t1
+    txt2 := t2
+    txt3 := t3
+
+// ---------------- orders ----------------
+if sigOK and canEval
+    key = sigDir * 10000000 + sigKey
+    if not array.includes(usedK, key)
+        array.push(usedK, key)
+        riskPer = math.abs(sigE - sigS) * syminfo.pointvalue
+        qty = 0.0
+        if riskPer > 0
+            qty := strategy.equity * riskPct / 100 / riskPer
+        if useFp
+            wDir := sigDir
+            wBar := t
+            wCE := sigE
+            wStop := sigS
+            wTgt := sigT
+            wTouched := false
+            wDiv := false
+            if sigSB >= 0 and sigSP >= 0 and t - sigSP < 1900
+                wDiv := (sigDir == 1 and cvd[t - sigSB] > cvd[t - sigSP]) or (sigDir == -1 and cvd[t - sigSB] < cvd[t - sigSP])
+            txt4 := "setup armed - waiting for price at the zone" + (wDiv ? " (CVD divergence at sweep)" : "")
+            st4 := 0
+            showE := sigE
+            showS := sigS
+            showT := sigT
+        else if qty > 0
+            posTgt := sigT
+            if sigDir == 1
+                strategy.entry("CD", strategy.long, qty=qty, limit=sigE)
+            else
+                strategy.entry("CD", strategy.short, qty=qty, limit=sigE)
+            strategy.exit("CDx", "CD", stop=sigS, limit=sigT)
+            whSignal(sigDir == 1 ? "buy_limit" : "sell_limit", sigE, sigS, sigT, modeIn)
+            pendBar := t
+            pendDir := sigDir
+            pendTP := sigT
+            showE := sigE
+            showS := sigS
+            showT := sigT
+prevPos := strategy.position_size
+
+// closed bar -> cloud server (prices used to fill the paper orders and to check SL/TP)
+if whOn and whBars
+    alert('{"event":"bar","t":' + str.tostring(math.floor(time / 1000)) + ',"o":' + str.tostring(open) + ',"h":' + str.tostring(high) + ',"l":' + str.tostring(low) + ',"c":' + str.tostring(close) + '}', alert.freq_all)
+
+// ---------------- display ----------------
+plot(showE, "Entry (CE)", color=color.new(color.blue, 0), style=plot.style_linebr, linewidth=2)
+plot(showS, "Stop", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(showT, "Target", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+plotshape(sigOK and canEval and sigDir == 1, "Long setup", shape.triangleup, location.belowbar, color.new(color.blue, 0), size=size.small)
+plotshape(sigOK and canEval and sigDir == -1, "Short setup", shape.triangledown, location.abovebar, color.new(color.orange, 0), size=size.small)
+plotshape(useFp and st4 == 1 and txt4 != txt4[1], "Footprint confirmed", shape.diamond, location.belowbar, color.new(color.teal, 0), size=size.tiny)
+
+var tbl = table.new(position.top_right, 3, 6, bgcolor=color.new(color.black, 85), border_width=1)
+if barstate.islast and showPanel
+    table.cell(tbl, 0, 0, "Chart Desk 3L", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 0, modeIn, text_color=color.white, text_size=size.small)
+    table.cell(tbl, 2, 0, "", text_size=size.small)
+    table.cell(tbl, 0, 1, "1 Elliott", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 1, st1 == 1 ? "PASS" : st1 == 0 ? "WAIT" : "FAIL", text_color=st1 == 1 ? color.lime : st1 == 0 ? color.orange : color.red, text_size=size.small)
+    table.cell(tbl, 2, 1, txt1, text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 2, "2 Wyckoff", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 2, st2 == 1 ? "PASS" : st2 == 0 ? "WAIT" : "FAIL", text_color=st2 == 1 ? color.lime : st2 == 0 ? color.orange : color.red, text_size=size.small)
+    table.cell(tbl, 2, 2, txt2, text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 3, "3 ICT", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 3, st3 == 1 ? "PASS" : st3 == 0 ? "WAIT" : "FAIL", text_color=st3 == 1 ? color.lime : st3 == 0 ? color.orange : color.red, text_size=size.small)
+    table.cell(tbl, 2, 3, txt3, text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 4, "4 Footprint", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 4, not useFp ? "OFF" : st4 == 1 ? "PASS" : st4 == 0 ? "WAIT" : "FAIL", text_color=st4 == 1 ? color.lime : st4 == 0 ? color.orange : color.red, text_size=size.small)
+    table.cell(tbl, 2, 4, useFp ? txt4 : "limit at CE (no confirmation)", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 5, "Data", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 5, fpBars > 0 ? str.tostring(100.0 * (fpBars - fpMiss) / fpBars, "#") + "%" : "-", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 2, 5, "bars with footprint data | delta " + str.tostring(fDelta, format.volume) + " | CVD " + str.tostring(cvd, format.volume), text_color=color.white, text_size=size.small)

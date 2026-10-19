@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BPE Paper Desk</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --fg:#1b2129; --mut:#667282; --line:#dde2e8; --up:#13795b; --dn:#b3261e; --acc:#2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12161b; --card:#1a2027; --fg:#e6ebf1; --mut:#93a0ae; --line:#2b333d; --up:#3ccf9a; --dn:#ff7b72; --acc:#6ea0ff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, "Noto Sans Thai", sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 12px; display:flex; justify-content:space-between; align-items:baseline; gap:8px; flex-wrap:wrap; }
+  h1 small { font-weight:400; color:var(--mut); font-size:13px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .k { color:var(--mut); font-size:12px; } .v { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .up { color:var(--up); } .dn { color:var(--dn); }
+  h2 { font-size:15px; margin:0 0 8px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:6px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--mut); font-weight:500; }
+  .scroll { overflow-x:auto; }
+  .empty { color:var(--mut); padding:6px 0; }
+  #gate { max-width:360px; margin:60px auto; }
+  input { width:100%; padding:9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
+  button { margin-top:10px; padding:9px 14px; border:0; border-radius:6px; background:var(--acc); color:#fff; font:inherit; cursor:pointer; }
+  svg { width:100%; height:180px; display:block; }
+  #err { color:var(--dn); font-size:13px; min-height:18px; }
+</style>
+</head>
+<body>
+<main id="gate" hidden>
+  <h1>BPE Paper Desk</h1>
+  <p class="k">ใส่ API Key (ค่าเดียวกับ API_KEY ที่ตั้งใน Railway) เก็บไว้ในเบราว์เซอร์นี้เท่านั้น</p>
+  <input id="key" type="password" autocomplete="off"><button id="ok">เข้าดู</button>
+  <p id="err"></p>
+</main>
+<main id="app" hidden>
+  <h1>BPE Paper Desk <small id="upd"></small></h1>
+  <div class="grid" id="tiles"></div>
+  <div class="card" style="margin-bottom:14px"><h2>ยอดเงินตามไม้ที่ปิด</h2><svg id="chart" viewBox="0 0 600 180" preserveAspectRatio="none"></svg></div>
+  <div class="card" style="margin-bottom:14px"><h2>ไม้ที่เปิดอยู่ / ออเดอร์รอ</h2><div class="scroll" id="open"></div></div>
+  <div class="card" style="margin-bottom:14px"><h2>สัญญาณจาก TradingView และการตัดสินใจของ ESP32</h2><div class="scroll" id="sigs"></div></div>
+  <div class="card"><h2>ไม้ที่ปิดแล้ว (ล่าสุดก่อน)</h2><div class="scroll" id="closed"></div></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const KEY = 'bpe_paper_key';
+let key = ''; try { key = localStorage.getItem(KEY) || ''; } catch (e) {}
+const SM = 7 * 3600;
+const ny = t => t ? new Date((t - SM) * 1000).toISOString().slice(5, 16).replace('T', ' ') : '-';
+const side = s => s === 1 ? 'BUY' : 'SELL';
+const cls = x => x > 0 ? 'up' : x < 0 ? 'dn' : '';
+const fmt = (x, n = 2) => (x === null || x === undefined) ? '-' : Number(x).toLocaleString('en-US', { minimumFractionDigits: n, maximumFractionDigits: n });
+async function api(p) {
+  const r = await fetch(p, { headers: { 'x-api-key': key } });
+  if (r.status === 401) throw new Error('BAD_KEY');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+function table(head, rows) {
+  if (!rows.length) return '<div class="empty">ยังไม่มี</div>';
+  return '<table><thead><tr>' + head.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' + rows.map(r => '<tr>' + r.map(c => '<td>' + c + '</td>').join('') + '</tr>').join('') + '</tbody></table>';
+}
+function chart(eq, start) {
+  const pts = [[0, start]].concat(eq.map(e => [e[0], e[1]]));
+  const ys = pts.map(p => p[1]); let lo = Math.min(...ys), hi = Math.max(...ys); if (hi - lo < 1) { hi += 1; lo -= 1; }
+  const x = i => pts.length < 2 ? 300 : 10 + (580 * i) / (pts.length - 1), y = v => 170 - ((v - lo) / (hi - lo)) * 160;
+  const line = pts.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p[1]).toFixed(1)).join(' ');
+  const base = y(start).toFixed(1);
+  $('chart').innerHTML = `<line x1="0" x2="600" y1="${base}" y2="${base}" stroke="currentColor" opacity=".25" stroke-dasharray="4 4"/><path d="${line}" fill="none" stroke="var(--acc)" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+}
+async function refresh() {
+  try {
+    const [s, st, tr, sg] = await Promise.all([api('/api/meta'), api('/api/stats'), api('/api/trades?limit=100'), api('/api/signals')]);
+    $('gate').hidden = true; $('app').hidden = false;
+    const pnl = s.balance - s.startBalance;
+    $('tiles').innerHTML = [
+      ['ยอดเงิน', fmt(s.balance), ''], ['Equity', fmt(s.equity), cls(s.equity - s.balance)], ['กำไร/ขาดทุนรวม', fmt(pnl), cls(pnl)],
+      ['รวม R', fmt(st.sumR), cls(st.sumR)], ['จำนวนไม้', st.trades + ' (ชนะ ' + st.winRate + '%)', ''], ['Profit factor', st.profitFactor === null ? '∞' : fmt(st.profitFactor), ''],
+      ['Max drawdown', fmt(st.maxDrawdown), 'dn'], ['วันนี้', fmt(s.todayPnl) + ' · เข้า ' + s.takenToday + ' ไม้', cls(s.todayPnl)], ['ราคา (bid)', s.bid ? fmt(s.bid) : '-', ''], ['แท่งล่าสุดจาก TV', s.barAge < 0 ? 'ยังไม่เคยได้รับ' : (s.barAge < 60 ? s.barAge + ' วิ ที่แล้ว' : Math.round(s.barAge / 60) + ' นาทีที่แล้ว'), s.barAge < 0 || s.barAge > 900 ? 'dn' : ''],
+    ].map(t => `<div class="card"><div class="k">${t[0]}</div><div class="v ${t[2]}">${t[1]}</div></div>`).join('');
+    const op = s.positions.map(p => [p.id, side(p.side), 'ไม้เปิด', fmt(p.open), fmt(p.sl), fmt(p.tp), p.volume / 100, ny(p.openT), p.comment || ''])
+      .concat(s.orders.map(o => [o.id, side(o.side), 'limit รอ', fmt(o.price), fmt(o.sl), fmt(o.tp), o.volume / 100, ny(o.createdT), o.comment || '']));
+    $('open').innerHTML = table(['#', 'ทิศ', 'สถานะ', 'ราคาเข้า', 'SL', 'TP', 'Vol', 'เวลา NY', 'หมายเหตุ'], op);
+    const cl = tr.trades.slice().reverse().map(t => [t.id, side(t.side), fmt(t.open), fmt(t.close), t.reason, `<span class="${cls(t.pnl)}">${fmt(t.pnl)}</span>`, `<span class="${cls(t.R)}">${fmt(t.R)}R</span>`, ny(t.openT), ny(t.closeT)]);
+    $('closed').innerHTML = table(['#', 'ทิศ', 'เข้า', 'ออก', 'เหตุผล', 'P/L', 'R', 'เปิด NY', 'ปิด NY'], cl);
+    const stTxt = { new: 'รอ ESP32', taken: 'รับแล้ว', skipped: 'ข้าม' };
+    $('sigs').innerHTML = table(['#', 'ทิศ/คำสั่ง', 'ราคา', 'SL', 'TP', 'สถานะ', 'เหตุผล / หมายเหตุ', 'หมายเหตุ TV'], sg.signals.map(x => [x.id, x.action, x.price ? fmt(x.price) : '-', x.sl ? fmt(x.sl) : '-', x.tp ? fmt(x.tp) : '-', `<span class="${x.status === 'taken' ? 'up' : x.status === 'skipped' ? 'dn' : ''}">${stTxt[x.status] || x.status}</span>`, x.reason || x.note || '', x.comment || '']));
+    chart(tr.equity, s.startBalance);
+    $('upd').textContent = 'แท่งล่าสุด ' + ny(s.lastBarT) + ' NY · อัปเดต ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    if (e.message === 'BAD_KEY') { $('app').hidden = true; $('gate').hidden = false; $('err').textContent = key ? 'API Key ไม่ถูกต้อง' : ''; }
+    else { $('upd').textContent = 'เชื่อมต่อไม่ได้: ' + e.message; }
+  }
+}
+$('ok').onclick = () => { key = $('key').value.trim(); try { localStorage.setItem(KEY, key); } catch (e) {} refresh(); };
+if (!key) $('gate').hidden = false;
+refresh(); setInterval(() => { if (key) refresh(); }, 15000);
+</script>
+</body>
+</html>
