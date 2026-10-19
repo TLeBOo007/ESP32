@@ -35,6 +35,11 @@ async function call(base, method, p, body) {
   assert.strictEqual((await m('XAUUSD')).positions.length, 1); assert.strictEqual((await m('EURUSD')).orders.length, 1);
   await bar('EURUSD', 1, 1.1, 1.1, 1.0985, 1.099);                                 // buy limit 1.0990: low + spread <= price
   assert.strictEqual((await m('EURUSD')).positions.length, 1);
+  // chart endpoint: candles of that symbol only, its open orders/positions, no other symbol's data
+  const ch = (await call(base, 'GET', '/api/chart?sym=EURUSD&tf=5')).json;
+  assert.strictEqual(ch.sym, 'EURUSD'); assert.strictEqual(ch.digits, 5); assert(ch.bars.length >= 2 && ch.bars[0].length === 5); assert(Array.isArray(ch.poi));
+  assert(ch.bars.every(b => b[1] < 2), 'EURUSD candles, not XAUUSD'); assert.strictEqual(ch.positions.length, 1); assert.strictEqual(ch.positions[0].price, 1.099);
+  assert.strictEqual((await call(base, 'GET', '/api/chart?sym=XAUUSD&tf=15')).json.sym, 'XAUUSD'); assert.strictEqual((await call(base, 'GET', '/api/chart')).code, 200);
   // EURUSD hits TP: +0.0110 * 1 lot(100 units) * 100000 = +1100 ; shared balance moves for all
   await bar('EURUSD', 2, 1.099, 1.11, 1.099, 1.105);
   e = await m('EURUSD'); assert.strictEqual(e.positions.length, 0);

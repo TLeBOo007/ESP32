@@ -99,6 +99,24 @@
   .focus .px { font-size:15px; color:var(--mut); }
   dl.kv { margin:12px 0 0; display:grid; grid-template-columns:96px 1fr; gap:7px 12px; font-size:14px; }
   dl.kv dt { color:var(--mut); } dl.kv dd { margin:0; }
+  /* price chart */
+  .pc-tools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .seg { display:inline-flex; border:1px solid var(--rule); border-radius:8px; overflow:hidden; background:var(--panel); }
+  .seg button { border:0; background:none; padding:4px 12px; font-size:13px; cursor:pointer; color:var(--mut); }
+  .seg button[aria-pressed="true"] { background:var(--sel); color:var(--selink); }
+  .pcwrap { position:relative; }
+  #pc { width:100%; height:400px; display:block; touch-action:pan-y; }
+  #pc text { fill:var(--faint); font-size:11px; font-family:inherit; }
+  #pc .zl { fill:var(--mut); font-size:11.5px; }
+  #pc .ln text { font-size:11.5px; font-weight:500; }
+  .tip { position:absolute; pointer-events:none; z-index:3; background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:7px 10px; font-size:12.5px; line-height:1.5; box-shadow:0 4px 18px rgba(0,0,0,.14); white-space:nowrap; }
+  .tip b { font-weight:600; }
+  .pclegend { display:flex; flex-wrap:wrap; gap:6px 18px; padding:10px 0 2px; color:var(--mut); font-size:12.5px; }
+  .pclegend span { display:inline-flex; align-items:center; gap:6px; }
+  .pclegend i { display:inline-block; width:12px; height:12px; border-radius:3px; }
+  details.tbl { margin-top:10px; font-size:13px; color:var(--mut); }
+  details.tbl summary { cursor:pointer; }
+  @media (max-width:700px) { #pc { height:320px; } }
   .chip { display:inline-block; padding:1px 8px; border-radius:6px; background:var(--wash); font-size:12.5px; margin:0 4px 4px 0; }
   ol.events { list-style:none; margin:12px 0 0; padding:0; border-left:2px solid var(--rule); }
   ol.events li { padding:0 0 8px 12px; font-size:13px; position:relative; }
@@ -182,6 +200,15 @@
     <div class="board" id="board"></div>
   </section>
 
+  <section>
+    <div class="head"><h2 id="pctitle">กราฟราคา</h2>
+      <div class="pc-tools"><span class="note" id="pcnote"></span>
+        <span class="seg" role="group" aria-label="ไทม์เฟรม"><button data-tf="5" aria-pressed="true">M5</button><button data-tf="15" aria-pressed="false">M15</button></span></div></div>
+    <div class="pcwrap"><svg id="pc" role="img" aria-label="กราฟแท่งเทียนราคา"></svg><div class="tip" id="pctip" hidden></div></div>
+    <div class="pclegend" id="pclegend"></div>
+    <details class="tbl"><summary>ดูเป็นตาราง (แท่งล่าสุด 20 แท่ง)</summary><div class="tw" id="pctable"></div></details>
+  </section>
+
   <section class="two">
     <div>
       <div class="head"><h2>ยอดเงินตามไม้ที่ปิด</h2><span class="note" id="eqnote"></span></div>
@@ -213,6 +240,7 @@ const $ = id => document.getElementById(id);
 const KEY = 'bpe_paper_key', TH = 'bpe_paper_theme';
 let key = ''; try { key = localStorage.getItem(KEY) || ''; } catch (e) {}
 try { const t = localStorage.getItem(TH); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+let chartTf = 5, CH = null, DZ = {};
 let selSym = '', DG = {}, TRADES = {}, openId = null, drew = false;
 
 const SESS = {
@@ -289,6 +317,91 @@ function renderBoard(s, bp, utc) {
     <div class="legend">${Object.values(SESS).map(x => `<span style="--c:${x.c}"><i></i>${x.name}</span>`).join('')}<span>แกนเวลา = นิวยอร์ก เริ่ม 17:00 · แถบสีคือช่วงที่ระบบหาจังหวะเข้า</span></div>`;
   $('boardnote').textContent = 'ตอนนี้ ' + n.label + ' ที่นิวยอร์ก' + (closed ? ' · ตลาดปิด' : '');
   document.querySelectorAll('#board .row').forEach(b => b.onclick = () => { selSym = b.dataset.sym; refresh(); });
+}
+
+// ---- price chart: candles + POI zones + Entry/TP/SL + closed-trade markers (all times are New York) ----
+function renderPrice(c) {
+  CH = c; const svg = $('pc'), W = svg.clientWidth || 800, H = svg.clientHeight || 400, pl = 8, pr = 66, pt = 12, pb = 24, dg = c.digits;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  $('pctitle').textContent = 'กราฟราคา · ' + c.sym;
+  document.querySelectorAll('.seg button').forEach(b => { b.textContent = b.dataset.tf === '5' ? 'M5' : 'M' + c.poiTF; b.setAttribute('aria-pressed', String(Number(b.dataset.tf) === chartTf)); });
+  const bars = c.bars;
+  if (bars.length < 5) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">ยังไม่มีข้อมูลแท่งราคา รอฟีดดึงราคามาสักครู่</text>`; $('pcnote').textContent = ''; $('pclegend').innerHTML = ''; $('pctable').innerHTML = ''; return; }
+  const n = bars.length, cw = (W - pl - pr) / n, bw = Math.max(1.5, Math.min(14, cw * 0.62)), X = i => pl + cw * (i + 0.5);
+  // price range: candles + the levels worth seeing (open orders, entry/SL/TP) but only the POI zones that are near price
+  let lo = Math.min(...bars.map(b => b[3])), hi = Math.max(...bars.map(b => b[2]));
+  const span0 = hi - lo || 1, near = v => v > lo - span0 * 0.6 && v < hi + span0 * 0.6;
+  const lv = [];
+  for (const x of c.positions.concat(c.orders)) { for (const v of [x.price, x.sl, x.tp]) if (v > 0) lv.push(v); }
+  lv.forEach(v => { if (near(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); } });
+  const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+  const Y = v => pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo)), F = v => Number(v).toFixed(dg);
+  const idxAt = t => { let k = -1; for (let i = 0; i < n; i++) { if (bars[i][0] <= t) k = i; else break; } return k; };
+  const step = c.tf * 60, nyHM = t => { const d = new Date((t - SM) * 1000); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); };
+  const nyMin = t => { const d = new Date((t - SM) * 1000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
+  let g = '';
+  // killzone bands (the same colours as the board above)
+  const wins = windows(DZ[c.sym] || { asia: 1, london: 1, nyam: 1, nypm: 1 });
+  let run = null;
+  const flush = (i1) => { if (run) { const x0 = pl + cw * run.i0, x1 = pl + cw * (i1 + 1); g += `<rect x="${x0.toFixed(1)}" y="${pt}" width="${(x1 - x0).toFixed(1)}" height="${H - pt - pb}" fill="${SESS[run.k].c}" opacity=".085"/><text x="${(x0 + 5).toFixed(1)}" y="${pt + 12}" style="fill:${SESS[run.k].c};opacity:.9;font-size:10.5px">${SESS[run.k].name}</text>`; run = null; } };
+  for (let i = 0; i < n; i++) {
+    const m = nyMin(bars[i][0]), w = wins.find(w => inWin(m, w)), k = w ? w[0] : null;
+    if (run && run.k !== k) flush(i - 1);
+    if (k && !run) run = { k, i0: i };
+  }
+  flush(n - 1);
+  // grid + price axis
+  const rawStep = (hi - lo) / 5, mag = Math.pow(10, Math.floor(Math.log10(rawStep))), stp = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= rawStep) || mag * 10;
+  for (let v = Math.ceil(lo / stp) * stp; v < hi; v += stp) g += `<line x1="${pl}" x2="${W - pr}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--rule)" stroke-width="1" opacity=".7"/><text x="${W - pr + 6}" y="${(Y(v) + 4).toFixed(1)}">${F(v)}</text>`;
+  // time axis: a label about every 90 px, at round times
+  const every = Math.max(1, Math.round(90 / cw));
+  for (let i = Math.ceil(every / 2); i < n; i += every) g += `<text x="${X(i).toFixed(1)}" y="${H - 7}" text-anchor="middle">${nyHM(bars[i][0])}</text>`;
+  // POI zones (labelled by type)
+  const pois = c.poi.filter(p => near(p.top) || near(p.bot)).sort((p, q) => q.top - p.top); let lastLab = -99;
+  pois.forEach(p => {
+    const y1 = Y(Math.min(p.top, hi)), y2 = Y(Math.max(p.bot, lo)), col = p.type === 'FVG' ? 'var(--london)' : 'var(--asia)';
+    g += `<g><rect x="${pl}" y="${y1.toFixed(1)}" width="${W - pl - pr}" height="${Math.max(2, y2 - y1).toFixed(1)}" fill="${col}" opacity=".13"/><line x1="${pl}" x2="${W - pr}" y1="${y1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${col}" stroke-dasharray="5 4" opacity=".7"/><line x1="${pl}" x2="${W - pr}" y1="${y2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}" stroke-dasharray="5 4" opacity=".7"/>${y1 + 13 - lastLab >= 14 ? `<text class="zl" x="${W - pr - 6}" y="${(y1 + 13).toFixed(1)}" text-anchor="end" style="fill:${col}">POI · ${p.type} M${c.poiTF}</text>` : ''}</g>`; if (y1 + 13 - lastLab >= 14) lastLab = y1 + 13;
+  });
+  // candles
+  for (let i = 0; i < n; i++) {
+    const [, o, h, l, cl] = bars[i], up = cl >= o, col = up ? 'var(--up)' : 'var(--dn)', x = X(i), yo = Y(o), yc = Y(cl);
+    g += `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${Y(h).toFixed(1)}" y2="${Y(l).toFixed(1)}" stroke="${col}" stroke-width="1.2"/><rect x="${(x - bw / 2).toFixed(1)}" y="${Math.min(yo, yc).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, Math.abs(yc - yo)).toFixed(1)}" fill="${up ? 'var(--panel)' : col}" stroke="${col}" stroke-width="1.2" rx="1"/>`;
+  }
+  // closed trades: entry marker -> exit marker, coloured by result
+  c.trades.forEach(t => {
+    const i0 = idxAt(t.openT), i1 = idxAt(t.closeT); if (i1 < 0) return; const a = Math.max(0, i0), win = t.pnl >= 0, col = win ? 'var(--up)' : 'var(--dn)', buy = t.side === 1;
+    const x0 = X(a), y0 = Y(t.open), x1 = X(i1), y1 = Y(t.close), ar = buy ? `${x0 - 5},${y0 + 8} ${x0 + 5},${y0 + 8} ${x0},${y0 - 1}` : `${x0 - 5},${y0 - 8} ${x0 + 5},${y0 - 8} ${x0},${y0 + 1}`;
+    g += `<g><line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${col}" stroke-width="1.6" stroke-dasharray="3 3"/><polygon points="${ar}" fill="${col}" stroke="var(--panel)" stroke-width="1.5"/><circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(1)}" r="4.5" fill="${col}" stroke="var(--panel)" stroke-width="2"/><title>#${t.id} ${sideName(t.side)} ${F(t.open)} → ${F(t.close)} (${esc(t.reason)}) ${signed(t.R)}R</title></g>`;
+  });
+  // open positions / waiting limits: Entry, SL, TP lines
+  const lines = [];
+  c.positions.concat(c.orders).forEach(x => {
+    const wait = c.orders.includes(x), buy = x.side === 1;
+    lines.push([x.tp, 'TP', 'var(--up)'], [x.price, (wait ? 'ENTRY limit ' : 'ENTRY ') + (buy ? 'BUY' : 'SELL'), 'var(--ink)'], [x.sl, 'SL', 'var(--dn)']);
+  });
+  lines.filter(l => l[0] > 0).forEach(([v, lab, col]) => {
+    if (v < lo || v > hi) return;
+    g += `<g class="ln"><line x1="${pl}" x2="${W - pr}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="${col}" stroke-width="1.6"/><rect x="${W - pr}" y="${(Y(v) - 9).toFixed(1)}" width="${pr - 2}" height="18" rx="4" fill="${col}"/><text x="${W - pr + 4}" y="${(Y(v) + 4).toFixed(1)}" style="fill:var(--panel)">${F(v)}</text><text x="${pl + 6}" y="${(Y(v) - 5).toFixed(1)}" style="fill:${col}">${lab}</text></g>`;
+  });
+  // last price
+  const last = bars[n - 1][4], lc = bars[n - 1][4] >= bars[n - 1][1] ? 'var(--up)' : 'var(--dn)';
+  g += `<line x1="${pl}" x2="${W - pr}" y1="${Y(last).toFixed(1)}" y2="${Y(last).toFixed(1)}" stroke="${lc}" stroke-dasharray="2 3" opacity=".8"/><rect x="${W - pr}" y="${(Y(last) - 9).toFixed(1)}" width="${pr - 2}" height="18" rx="4" fill="${lc}" opacity=".18"/><text x="${W - pr + 4}" y="${(Y(last) + 4).toFixed(1)}" style="fill:${lc};font-weight:600">${F(last)}</text>`;
+  g += `<line id="pcx" x1="0" x2="0" y1="${pt}" y2="${H - pb}" stroke="var(--mut)" stroke-dasharray="3 3" opacity="0" />`;
+  svg.innerHTML = g;
+  // hover: crosshair + OHLC tooltip
+  const tip = $('pctip'), cx = $('pcx');
+  svg.onmousemove = svg.ontouchmove = ev => {
+    const r = svg.getBoundingClientRect(), pt0 = ev.touches ? ev.touches[0] : ev, mx = (pt0.clientX - r.left) * (W / r.width), i = Math.max(0, Math.min(n - 1, Math.floor((mx - pl) / cw)));
+    const b = bars[i], up = b[4] >= b[1];
+    cx.setAttribute('x1', X(i)); cx.setAttribute('x2', X(i)); cx.setAttribute('opacity', '.7');
+    tip.hidden = false; tip.innerHTML = `<b>${nyStr(b[0])} NY</b><br>O ${F(b[1])} · H ${F(b[2])}<br>L ${F(b[3])} · C <span class="${up ? 'up' : 'dn'}">${F(b[4])}</span>`;
+    const left = (pt0.clientX - r.left) + 14; tip.style.left = Math.min(left, r.width - tip.offsetWidth - 6) + 'px'; tip.style.top = Math.max(0, (pt0.clientY - r.top) - 56) + 'px';
+  };
+  svg.onmouseleave = svg.ontouchend = () => { tip.hidden = true; cx.setAttribute('opacity', '0'); };
+  const wl = c.positions.length + c.orders.length;
+  $('pcnote').textContent = `M${c.tf} · ${n} แท่ง · เวลานิวยอร์ก · ${c.bias === 'BULL' ? 'ทิศขึ้น' : c.bias === 'BEAR' ? 'ทิศลง' : 'ยังไม่มีทิศ'}${wl ? '' : ' · ไม่มีไม้เปิด'}`;
+  $('pclegend').innerHTML = `<span><i style="background:var(--up)"></i>แท่งขึ้น</span><span><i style="background:var(--dn)"></i>แท่งลง</span><span><i style="background:var(--london);opacity:.45"></i>POI แบบ FVG</span><span><i style="background:var(--asia);opacity:.45"></i>POI แบบ OB</span><span><i style="background:var(--ink)"></i>Entry</span><span><i style="background:var(--dn)"></i>SL</span><span><i style="background:var(--up)"></i>TP</span><span>▲▼ ไม้ที่ปิดแล้ว (เขียว = กำไร, แดง = ขาดทุน)</span><span>แถบสีพื้นหลัง = ช่วงเทรด</span>`;
+  $('pctable').innerHTML = '<table><thead><tr><th>เวลา NY</th><th class="r">เปิด</th><th class="r">สูง</th><th class="r">ต่ำ</th><th class="r">ปิด</th></tr></thead><tbody>' + bars.slice(-20).reverse().map(b => `<tr><td>${nyStr(b[0])}</td><td class="r">${F(b[1])}</td><td class="r">${F(b[2])}</td><td class="r">${F(b[3])}</td><td class="r ${b[4] >= b[1] ? 'up' : 'dn'}">${F(b[4])}</td></tr>`).join('') + '</tbody></table>';
 }
 
 function renderChart(eq, start) {
@@ -411,11 +524,13 @@ async function refresh() {
   try {
     const q = selSym ? '?sym=' + selSym : '';
     const [s, st, tr, sg, bp] = await Promise.all([api('/api/meta' + q), api('/api/stats'), api('/api/trades?limit=100'), api('/api/signals'), api('/api/bpe' + q)]);
+    const ch = await api('/api/chart?sym=' + (selSym || s.symbol) + '&tf=' + chartTf).catch(() => null);
     $('gate').hidden = true; $('app').hidden = false;
     if (!selSym) selSym = s.symbol;
     s.symbols.forEach(x => DG[x.sym] = x.digits);
     bp.symbols.forEach(x => DG[x.sym] = x.digits ?? DG[x.sym]);
-    renderAccount(s, st); renderBoard(s, bp, s.utc); renderChart(tr.equity, s.startBalance);
+    bp.symbols.forEach(x => DZ[x.sym] = x.kzf);
+    renderAccount(s, st); renderBoard(s, bp, s.utc); renderChart(tr.equity, s.startBalance); if (ch) renderPrice(ch);
     if (bp.enabled) renderFocus(bp, s); else $('focus').innerHTML = '<div class="empty">ตัวสร้างสัญญาณปิดอยู่ (BPE_ENABLED=0)</div>';
     renderOpen(s); renderTrades(tr, st); renderSignals(sg);
     const anyErr = bp.symbols.find(x => x.feed && x.feed.lastError), stale = s.barAge < 0 || s.barAge > 900;
@@ -433,6 +548,7 @@ $('theme').onclick = () => {
   const nx = cur === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = nx; try { localStorage.setItem(TH, nx); } catch (e) {}
   refresh();
 };
+document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { chartTf = Number(b.dataset.tf); refresh(); });
 let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (drew) refresh(); }, 250); });
 if (!key) $('gate').hidden = false;
 refresh(); setInterval(() => { if (key) refresh(); }, 15000);

@@ -322,6 +322,19 @@ const handlers = {
   'POST /api/amend': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.amend(Number(b.id), Number(b.sl), Number(b.tp)); save(); return r; },
   'POST /api/close': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.close(Number(b.id), Number(b.price), Number(b.t), Number(b.volume), b.reason || 'time'); flush(inst); return r; },
   'GET /api/bpe': (_b, url) => ({ ...symStatus(symOf(null, url)), symbols: [...insts.values()].map(i => { const x = symStatus(i); return { sym: i.sym, kz: x.kz, bias: x.bias, biasH4: x.biasH4, biasD1: x.biasD1, state: x.state, last: x.last, ny: x.ny, feed: x.feed, bars: x.bars, kzf: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, wait: !!i.bpe.c.waitEquityOpen }, digits: i.cfg.digits }; }) }),
+  // candles for the dashboard chart: closed bars the signal engine keeps (server time), its POI zones, open orders/positions and closed trades of this symbol
+  'GET /api/chart': (_b, url) => {
+    const inst = symOf(null, url), bp = inst.bpe, tfq = Number(url.searchParams.get('tf')), tf = tfq === 5 ? 5 : bp.c.poiTF;
+    const n = Math.max(20, Math.min(600, Number(url.searchParams.get('n')) || (tf === 5 ? 200 : 160))), d = bp.st.tf[tf], from = Math.max(0, d.t.length - n), t0 = d.t[from] || 0;
+    const bars = []; for (let i = from; i < d.t.length; i++) bars.push([d.t[i], d.o[i], d.h[i], d.l[i], d.c[i]]);
+    const en = inst.engine, slim = x => ({ id: x.id, side: x.side, price: x.price || x.open, sl: x.sl, tp: x.tp, t: x.openT || x.createdT || 0, comment: x.comment || '' });
+    return {
+      sym: inst.sym, tf, poiTF: bp.c.poiTF, digits: inst.cfg.digits, bars, bias: bp.status().bias, state: bp.stateTxt, quote: en.quote,
+      poi: bp.poi.map(p => ({ top: p.top, bot: p.bot, type: p.type === 0 ? 'FVG' : 'OB' })),
+      orders: en.orders.map(slim), positions: en.positions.map(x => ({ ...slim(x), price: x.open })),
+      trades: en.trades.filter(x => x.closeT >= t0).map(x => ({ id: x.id, side: x.side, open: x.open, close: x.close, openT: x.openT, closeT: x.closeT, reason: x.reason, R: x.R, pnl: x.pnl, comment: x.comment || '' })),
+    };
+  },
   'POST /api/notify-test': async () => ({ line: await pushLine('[PAPER] ทดสอบแจ้งเตือน LINE จาก BPE Paper Server'), telegram: !!(TG_TOKEN && TG_CHAT) }),
   'POST /api/test/now': b => { if (process.env.TEST_MODE !== '1') return { error: 'NOT_ENABLED' }; testNow = Number(b.utc) || 0; return { ok: true }; },
   'POST /api/test/failack': b => { if (process.env.TEST_MODE !== '1') return { error: 'NOT_ENABLED' }; failAck = Number(b.n) || 0; return { ok: true }; },
