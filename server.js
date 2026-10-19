@@ -12,6 +12,8 @@ const { Engine } = require('./engine');
 const { toServer, serverToUtc } = require('./lib/timeutil');
 const { Bpe } = require('./lib/bpe');
 const { Feed } = require('./lib/feed');
+const crypto = require('crypto');
+const { Status, dailyText, statusText } = require('./lib/status');
 
 const PORT = Number(process.env.PORT || 3000);
 const API_KEY = process.env.API_KEY || '';
@@ -21,6 +23,9 @@ const START_BALANCE = Number(process.env.START_BALANCE || 10000);
 const MIN_VOLUME = Number(process.env.MIN_VOLUME || 1), STEP_VOLUME = Number(process.env.STEP_VOLUME || 1), MAX_VOLUME = Number(process.env.MAX_VOLUME || 1000000);
 const LINE_TOKEN = process.env.LINE_CHANNEL_TOKEN || '';
 const LINE_TO = process.env.LINE_TO || '';
+const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || '';              // only needed for the "สถานะ" chat command (webhook signature check)
+const ST_SETUP = process.env.LINE_STATUS_SETUP_STAGE === undefined ? 3 : Number(process.env.LINE_STATUS_SETUP_STAGE);   // tell me when a setup reaches this stage (0 = never)
+const ST_DAILY = process.env.LINE_STATUS_DAILY !== '0', ST_FEED = process.env.LINE_STATUS_FEED !== '0';
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID || '';
 const NOTIFY_URL = process.env.NOTIFY_WEBHOOK_URL || '';
@@ -135,13 +140,18 @@ function save() {
 // ---- trading day (server time = New York + 7h, midnight to midnight like MT4) ------------
 function rollDay() {
   const dk = Math.floor(toServer(now()) / 86400);
-  if (dk !== meta.dayKey) { meta.dayKey = dk; meta.dayStartBalance = acct.balance; meta.takenToday = 0; save(); }
+  if (dk !== meta.dayKey) {
+    const old = meta.dayKey;
+    if (old > 0 && ST_DAILY) sendDaily(old, meta.dayStartBalance);                  // summary of the day that just ended
+    meta.dayKey = dk; meta.dayStartBalance = acct.balance; meta.takenToday = 0; meta.setupsToday = 0; save();
+  }
 }
 
 // ---- notifications -----------------------------------------------------------------------
 const sideName = s => (s === 1 ? 'BUY' : 'SELL');
 const fxs = (x, sym) => (typeof x === 'number' ? x.toFixed(instOf(sym).cfg.digits) : x);
 function describe(ev) {
+  if (ev.type === 'status') return ev.text;
   const SYMBOL = ev.sym || FIRST.sym, fx = x => fxs(x, SYMBOL);
   if (ev.type === 'signal') { const s = ev.signal; return `📡 สัญญาณ ${s.action.toUpperCase()} ${SYMBOL}${s.price ? ' @ ' + fx(s.price) : ''}${s.sl ? '\nSL ' + fx(s.sl) + '  TP ' + fx(s.tp) : ''}${s.comment ? '\n' + s.comment : ''}`; }
   if (ev.type === 'decision') { const s = ev.signal; return s.status === 'taken' ? `✅ ESP32 รับสัญญาณ #${s.id} ${SYMBOL} (${s.action}) ${s.note || ''}`.trim() : `⏭ ESP32 ข้ามสัญญาณ #${s.id} ${SYMBOL} (${s.action}): ${s.reason || ''}`; }
@@ -170,6 +180,49 @@ async function notify(events) {
 }
 function flush(inst, extra = []) { const ev = extra.concat(inst.engine.takeEvents()); for (const e of ev) e.sym = inst.sym; if (ev.length) { notify(ev); save(); } return ev; }
 
+// ---- status messages (setup progress, daily summary, feed alerts, on demand) ----------------
+const statusN = new Status({ minStage: ST_SETUP });
+function sendDaily(dayKey, startBal) {
+  try {
+    const trades = allTrades().filter(t => Math.floor(t.closeT / 86400) === dayKey).map(t => ({ sym: t.sym, pnl: t.pnl, R: t.R }));
+    const signals = meta.signals.filter(g => g.source === 'bpe' && Math.floor(toServer(g.recvT) / 86400) === dayKey).length;
+    const text = dailyText({ date: new Date(dayKey * 86400 * 1000).toISOString().slice(0, 10), balance: acct.balance, dayStart: startBal, trades, signals, setups: meta.setupsToday || 0 });
+    if (text) notify([{ type: 'status', text }]);
+  } catch (e) { console.error('daily summary:', e.message); }
+}
+function statusData() {
+  rollDay();
+  return { balance: acct.balance, dayStart: meta.dayStartBalance, open: allPositions().length, pending: allOrders().length,
+    symbols: [...insts.values()].map(i => { const s = i.bpe.status(); return { sym: i.sym, digits: i.cfg.digits, bid: i.engine.quote.bid, bias: s.bias, biasH4: s.biasH4, biasD1: s.biasD1, kz: s.kz, su: setupBrief(i), tr: tradeBrief(i) }; }) };
+}
+function checkFeeds() {
+  if (!ST_FEED || FEED_KIND === 'none') return null;
+  const msg = statusN.feeds([...feeds.keys()].map(sym => ({ sym, error: (meta.feeds[sym] || {}).lastError || '', now: now() })));
+  if (msg) notify([{ type: 'status', text: msg }]);
+  return msg;
+}
+function replyLine(token, text) {
+  if (!LINE_TOKEN) return Promise.resolve(false);
+  return fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + LINE_TOKEN },
+    body: JSON.stringify({ replyToken: token, messages: [{ type: 'text', text: text.slice(0, 4900) }] }),
+  }).then(async r => { if (!r.ok) console.error('line reply:', r.status, await r.text()); return r.ok; }).catch(e => { console.error('line reply:', e.message); return false; });
+}
+// LINE sends chat messages here (set the webhook URL to https://<app>/line/webhook). Replies are free (they do not use the push quota).
+async function lineWebhook(raw, signature) {
+  if (!LINE_SECRET) return { code: 404, body: { error: 'NOT_ENABLED' } };
+  const want = crypto.createHmac('sha256', LINE_SECRET).update(raw).digest(), got = Buffer.from(String(signature || ''), 'base64');
+  if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return { code: 401, body: { error: 'BAD_SIGNATURE' } };
+  let j; try { j = JSON.parse(raw.toString('utf8') || '{}'); } catch (e) { return { code: 400, body: { error: 'bad json' } }; }
+  for (const ev of j.events || []) {
+    if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text' || !ev.replyToken) continue;
+    if (LINE_TO && !(ev.source && ev.source.userId === LINE_TO)) continue;           // only the owner may ask
+    const t = String(ev.message.text || '').trim().toLowerCase();
+    await replyLine(ev.replyToken, /^(สถานะ|ขอสถานะ|status|พอร์ต)/.test(t) ? statusText(statusData()) : 'พิมพ์ "สถานะ" เพื่อดูสถานะของระบบตอนนี้');
+  }
+  return { code: 200, body: { ok: true } };
+}
+
 // ---- TradingView webhook ---------------------------------------------------------------------
 const ACTIONS = { buy: 'buy', long: 'buy', sell: 'sell', short: 'sell', buy_limit: 'buy_limit', sell_limit: 'sell_limit', cancel: 'cancel', close: 'close', close_all: 'close' };
 const nz = x => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
@@ -192,6 +245,7 @@ function ingestBar(inst, t, o, h, l, c, isServerTime, evaluate = true) {
   if (ok && BPE_ON) {
     let acts = [];
     try { acts = evaluate ? bpe.onBar(ts, o, h, l, c, { bid: c, ask: c + SPREAD }) : (bpe.addHistory(ts, o, h, l, c), []); } catch (e) { console.error('signal engine (' + inst.sym + '):', e); }
+    if (evaluate) { const txt = statusN.setup(inst.sym, setupBrief(inst), cfg.digits); if (txt) { events.push({ type: 'status', text: txt }); meta.setupsToday = (meta.setupsToday || 0) + 1; } }
     for (const a of acts) {
       const comment = a.action === 'cancel' || a.action === 'close' ? a.comment : `${a.comment} ${a.model} RR${a.rr.toFixed(1)} ${a.tpName}`;
       const sig = pushSignal({ sym: inst.sym, action: a.action, price: a.price, sl: a.sl, tp: a.tp, comment, barT: tu, source: 'bpe', why: a.why });
@@ -349,6 +403,8 @@ const handlers = {
       trades: en.trades.filter(x => x.closeT >= t0).map(x => ({ id: x.id, side: x.side, open: x.open, close: x.close, openT: x.openT, closeT: x.closeT, reason: x.reason, R: x.R, pnl: x.pnl, comment: x.comment || '' })),
     };
   },
+  'GET /api/status-text': () => ({ text: statusText(statusData()) }),
+  'POST /api/notify-status': async () => ({ line: await pushLine('[PAPER] ' + statusText(statusData())) }),
   'POST /api/notify-test': async () => ({ line: await pushLine('[PAPER] ทดสอบแจ้งเตือน LINE จาก BPE Paper Server'), telegram: !!(TG_TOKEN && TG_CHAT) }),
   'POST /api/test/now': b => { if (process.env.TEST_MODE !== '1') return { error: 'NOT_ENABLED' }; testNow = Number(b.utc) || 0; return { ok: true }; },
   'POST /api/test/failack': b => { if (process.env.TEST_MODE !== '1') return { error: 'NOT_ENABLED' }; failAck = Number(b.n) || 0; return { ok: true }; },
@@ -370,6 +426,12 @@ const server = http.createServer(async (req, res) => {
       if (!authed(req, url.searchParams.get('key') || b.key)) return send(res, 401, { error: 'BAD_KEY' });
       const out = tradingView(b);
       return send(res, out.error ? 400 : 200, out);
+    }
+    if (req.method === 'POST' && url.pathname === '/line/webhook') {          // LINE chat command: authenticated by the X-Line-Signature, not by the API key
+      const chunks = []; let n = 0;
+      for await (const c of req) { n += c.length; if (n > 256 * 1024) return send(res, 400, { error: 'too large' }); chunks.push(c); }
+      const out = await lineWebhook(Buffer.concat(chunks), req.headers['x-line-signature']);
+      return send(res, out.code, out.body);
     }
     const h = handlers[req.method + ' ' + url.pathname];
     if (!h) return send(res, 404, { error: 'NOT_FOUND' });
@@ -402,6 +464,6 @@ if (FEED_KIND !== 'none') {
   feed = FIRST.feed;
 }
 if (require.main === module) {
-  server.listen(PORT, () => { console.log(`paper server on :${PORT}, symbols ${SYM_LIST.join(',')}, start balance ${engine.startBalance}, data ${DATA_FILE}, feed ${FEED_KIND}`); let d = 1000; for (const f of feeds.values()) { f.start(d); d += 4000; } });
+  server.listen(PORT, () => { console.log(`paper server on :${PORT}, symbols ${SYM_LIST.join(',')}, start balance ${engine.startBalance}, data ${DATA_FILE}, feed ${FEED_KIND}`); let d = 1000; for (const f of feeds.values()) { f.start(d); d += 4000; } setInterval(checkFeeds, 60000).unref(); });
 }
-module.exports = { server, engine, meta, bpe, feed, insts, acct };
+module.exports = { server, engine, meta, bpe, feed, insts, acct, statusN, checkFeeds, sendDaily };
