@@ -5,7 +5,7 @@
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert');
 const csv = process.env.BPE_CSV;
 if (!csv || !fs.existsSync(csv)) { console.log('bpe server test skipped (set BPE_CSV)'); process.exit(0); }
-process.env.API_KEY = 'test-key-0123456789'; process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bpe-')); process.env.TEST_MODE = '1';
+process.env.API_KEY = 'test-key-0123456789'; process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'bpe-')); process.env.TEST_MODE = '1'; process.env.BPE_CONFIG = '{"setupMode":"legacy"}';   // golden file = original Turtle Soup / Unicorn logic
 const { server, bpe } = require('../server');
 const { serverToUtc } = require('../lib/timeutil');
 const K = process.env.API_KEY;

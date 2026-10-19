@@ -197,6 +197,7 @@
 
   <section>
     <div class="head"><h2>ประวัติไม้</h2><span class="note">กดแถวเพื่อดูว่าทำไมเข้าและทำไมออก</span></div>
+    <div class="bysym" id="bymodel"></div>
     <div class="bysym" id="bysym"></div>
     <div class="tw" id="closed"></div>
   </section>
@@ -308,15 +309,63 @@ function renderChart(eq, start) {
   $('eqnote').textContent = (eq.length) + ' ไม้';
 }
 
+// Thai display of the engine's status text (the server keeps English; only the screen is translated)
+const TH_B = { BULL: 'ขึ้น', BEAR: 'ลง', none: 'ไม่ชัด' };
+const TH_LIQ = { SSL: 'แนวรับสภาพคล่อง (SSL)', BSL: 'แนวต้านสภาพคล่อง (BSL)', swing: 'จุดกลับตัว (swing)' };
+const thLiq = n => TH_LIQ[n] || n;
+function thState(t) {
+  t = String(t == null ? '' : t); let m;
+  const R = [
+    [/^no bias$/, () => 'ยังไม่มีทิศทาง (Bias)'],
+    [/^no POI on the bias side$/, () => 'ไม่มี POI ฝั่งเดียวกับทิศทาง'],
+    [/^outside killzone - (\w+) bias, (\d+) POI$/, m => `นอกช่วงเทรด · ทิศ ${TH_B[m[1]] || m[1]} · มี ${m[2]} POI`],
+    [/^(BUY|SELL) bias - waiting for price at (\d+) POI$/, m => `ทิศ ${m[1] === 'BUY' ? 'ซื้อ' : 'ขาย'} · รอราคาเข้า ${m[2]} POI`],
+    [/^in POI - waiting for (SSL|BSL) to be cleared$/, m => `ราคาอยู่ใน POI · รอกวาด${thLiq(m[1])}`],
+    [/^swept (\S+) - move too weak \(no displacement candle\)$/, m => `กวาด${thLiq(m[1])}แล้ว · แรงยังไม่พอ (ยังไม่มีแท่งแรงชัด)`],
+    [/^swept (\S+) - no reference for (\w+)$/, m => `กวาด${thLiq(m[1])}แล้ว · ยังไม่มีจุดอ้างอิงของ ${m[2]}`],
+    [/^swept (\S+) - waiting for (\w+) close beyond ([\d.,]+)$/, m => `กวาด${thLiq(m[1])}แล้ว · รอ ${m[2]} ปิดเลย ${m[3]}`],
+    [/^displacement - waiting for FVG$/, () => 'ราคาพุ่งแรงแล้ว · รอ FVG เกิด'],
+    [/^(.+) ready - waiting for the killzone to open$/, m => `${m[1]} พร้อม · รอเข้าช่วงเทรด`],
+    [/^order sent$/, () => 'ส่งคำสั่งแล้ว'],
+    [/^killzone ended$/, () => 'หมดช่วงเทรด'],
+    [/^POI broken on (\w+)$/, m => `POI ถูกทะลุบน ${m[1]}`],
+    [/^bias changed$/, () => 'ทิศทางเปลี่ยน'],
+    [/^setup too old$/, () => 'จังหวะเก่าเกินไป'],
+    [/^no liquidity sweep after the POI$/, () => 'ไม่มีการกวาดสภาพคล่องหลังเข้า POI'],
+    [/^no displacement after the sweep$/, () => 'ไม่มีแท่งแรงหลังกวาด'],
+    [/^no FVG after the displacement$/, () => 'ไม่มี FVG หลังราคาพุ่ง'],
+    [/^FVG found - waiting for a FVG in the (discount|premium) zone$/, m => `เจอ FVG แต่ยังไม่อยู่ใน${m[1] === 'discount' ? 'โซนถูก (Discount)' : 'โซนแพง (Premium)'}`],
+    [/^FVG found - waiting for IDM to be swept$/, () => 'เจอ FVG · รอกวาด IDM ก่อน'],
+    [/^FVG found - waiting for OTE \/ IDM$/, () => 'เจอ FVG ในโซนที่ถูกต้อง · รอจังหวะ OTE / IDM'],
+    [/^no Unicorn \(.*\)$/, () => 'ไม่มี Unicorn (FVG ไม่ซ้อน Breaker Block)'],
+    [/^price already beyond the stop$/, () => 'ราคาเลย SL ไปแล้ว'],
+    [/^no liquidity target$/, () => 'ไม่มีเป้า TP'],
+    [/^R:R ([\d.]+) < ([\d.]+) \(TP (.+)\)$/, m => `R:R ${m[1]} ต่ำกว่าเกณฑ์ ${m[2]} (TP ${m[3]})`],
+    [/^SL\/TP inside stop level$/, () => 'SL/TP ใกล้ราคาเกินไป'],
+    [/^blocked: (.+)$/, m => 'ถูกบล็อก: ' + m[1]],
+    [/^min lot risk too high for balance$/, () => 'ไม้ขนาดต่ำสุดเสี่ยงเกินเงินในพอร์ต'],
+    [/^order already open$/, () => 'มีไม้/ออเดอร์เปิดอยู่แล้ว'],
+  ];
+  for (const [re, f] of R) if ((m = t.match(re))) return f(m);
+  return t;
+}
+function thKz(t) {
+  t = String(t == null ? '' : t); let m;
+  if ((m = t.match(/^IN (.+) KZ$/))) return 'อยู่ในช่วงเทรด ' + m[1];
+  if ((m = t.match(/^before (.+) \(watching\)$/))) return 'ก่อนช่วง ' + m[1] + ' (เฝ้าดู)';
+  if (t === 'outside killzone') return 'นอกช่วงเทรด';
+  return t;
+}
+
 function renderFocus(bp, s) {
   const m = s.symbols.find(y => y.sym === bp.sym) || {}, b = biasTxt(bp.bias);
   const poi = bp.poi.length ? bp.poi.map(p => `<span class="chip">${esc(p.type)} ${px(p.bot, bp.sym)}–${px(p.top, bp.sym)}</span>`).join('') : '<span class="mut">ยังไม่มี</span>';
   const f = bp.feed || {}, feedTxt = f.kind === 'none' ? 'ไม่ได้ตั้งค่า (รอแท่งจาก /tv หรือ MT4)' : f.lastError ? `<span class="dn">ผิดพลาด: ${esc(f.lastError)}</span>` : (f.lastPollT ? 'ดึงล่าสุด ' + new Date(f.lastPollT * 1000).toLocaleTimeString('th-TH') : 'รอดึงครั้งแรก');
   const warm = bp.bars.d1 < 12 ? `<div class="note" style="margin-top:8px">ข้อมูลรายวันยังไม่ครบ 12 วัน ทิศทางจะว่างไปก่อน</div>` : '';
   const ev = bp.log.slice().reverse().slice(0, 8).map(e => `<li class="${/placed|entry/.test(e.evt) ? 'go' : ''}"><time>${esc(e.ny)}</time><b>${esc(e.evt)}</b> ${e.side !== '-' ? esc(e.side) : ''} <span class="mut">${esc(e.det || '')}</span></li>`).join('');
-  $('focus').innerHTML = `<div class="head"><h2>${bp.sym}</h2><span class="note">${esc(bp.kz)}</span></div>
+  $('focus').innerHTML = `<div class="head"><h2>${bp.sym}</h2><span class="note">${esc(thKz(bp.kz))}</span></div>
     <h3 class="${b[1]}">${b[0]}</h3><div class="px">ราคา ${px(m.bid, bp.sym)}</div>
-    <dl class="kv"><dt>สถานะ</dt><dd>${esc(bp.state)}</dd><dt>Bias</dt><dd>H4 ${bp.biasH4} · D1 ${bp.biasD1}</dd><dt>POI</dt><dd>${poi}</dd><dt>สัญญาณล่าสุด</dt><dd>${esc(bp.last)}</dd><dt>แหล่งราคา</dt><dd>${esc(f.symbol || '')} ${feedTxt}</dd><dt>แท่งที่เก็บ</dt><dd>M5 ${bp.bars.m5} · H4 ${bp.bars.h4} · D1 ${bp.bars.d1}</dd></dl>${warm}
+    <dl class="kv"><dt>สถานะ</dt><dd>${esc(thState(bp.state))}</dd><dt>Bias</dt><dd>H4 ${TH_B[bp.biasH4] || bp.biasH4} · D1 ${TH_B[bp.biasD1] || bp.biasD1}</dd><dt>POI</dt><dd>${poi}</dd><dt>สัญญาณล่าสุด</dt><dd>${esc(bp.last)}</dd><dt>แหล่งราคา</dt><dd>${esc(f.symbol || '')} ${feedTxt}</dd><dt>แท่งที่เก็บ</dt><dd>M5 ${bp.bars.m5} · H4 ${bp.bars.h4} · D1 ${bp.bars.d1}</dd></dl>${warm}
     ${ev ? `<ol class="events">${ev}</ol>` : '<div class="empty">ยังไม่มีเหตุการณ์ของสินทรัพย์นี้</div>'}`;
 }
 
@@ -337,6 +386,8 @@ function renderOpen(s) {
 
 function renderTrades(tr, st) {
   TRADES = {}; tr.trades.forEach(t => TRADES[t.id] = t);
+  const MN = { M1: 'M1 MSS+FVG', M2: 'M2 +IDM', M3: 'M3 +OTE', M4: 'M4 BOX', UC: 'Unicorn', TS: 'Turtle Soup' };
+  $('bymodel').innerHTML = (st.byModel || []).map(b => `<div><b>${esc(MN[b.model] || b.model)}</b><span class="${cls(b.netPnl)}">${signed(b.sumR)}R · ${b.trades} ไม้ · ${b.winRate}%</span></div>`).join('');
   $('bysym').innerHTML = (st.bySymbol || []).filter(b => b.trades).map(b => `<div><b>${b.sym}</b><span class="${cls(b.netPnl)}">${signed(b.netPnl)} · ${b.trades} ไม้ · ${b.winRate}%</span></div>`).join('');
   if (!tr.trades.length) { $('closed').innerHTML = '<div class="empty">ยังไม่มีไม้ที่ปิด Forward test เริ่มบันทึกทันทีที่มีไม้แรก</div>'; return; }
   const rows = tr.trades.slice().reverse().map(t => {

@@ -196,8 +196,13 @@ class Engine {
     const gp = wins.reduce((s, x) => s + x.pnl, 0), gl = -loss.reduce((s, x) => s + x.pnl, 0);
     let peak = this.startBalance, dd = 0, bal = this.startBalance;
     for (const x of t) { bal += x.pnl; peak = Math.max(peak, bal); dd = Math.max(dd, peak - bal); }
-    const sumR = t.reduce((s, x) => s + x.R, 0);
-    return {
+    const sumR = t.reduce((s, x) => s + x.R, 0), bm = {};
+    for (const x of t) {                                           // per setup: the model code is the word after "BPE " in the order comment (M1..M4, UC, TS)
+      const m = /BPE\s+(\S+)/.exec(x.comment || ''), k = m ? m[1] : 'other', b = bm[k] = bm[k] || { model: k, trades: 0, wins: 0, netPnl: 0, sumR: 0 };
+      b.trades++; if (x.pnl > 0) b.wins++; b.netPnl += x.pnl; b.sumR += x.R;
+    }
+    const byModel = Object.values(bm).map(b => ({ model: b.model, trades: b.trades, winRate: round(b.wins / b.trades * 100, 1), netPnl: round(b.netPnl, 2), sumR: round(b.sumR, 2) })).sort((p, q) => p.model < q.model ? -1 : 1);
+    return { byModel,
       trades: t.length, wins: wins.length, losses: loss.length, winRate: t.length ? round(wins.length / t.length * 100, 1) : 0,
       netPnl: round(this.balance - this.startBalance, 2), sumR: round(sumR, 2), profitFactor: gl > 0 ? round(gp / gl, 2) : (gp > 0 ? null : 0),
       maxDrawdown: round(dd, 2),

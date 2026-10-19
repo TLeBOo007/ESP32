@@ -20,7 +20,7 @@ const host = {
     sim.live = fresh.slice();
   },
 };
-const bpe = new Bpe({ symbol: 'US100' }, host);
+const bpe = new Bpe({ symbol: 'US100', setupMode: 'legacy' }, host)   // the golden file was made with the original Turtle Soup / Unicorn logic;
 function closeAt(x, px, t, why) {
   const d = x.type === 0 ? 1 : -1; x.open = false; sim.bal += d * (px - x.op) * (x.vol / 100);
   out.push(`CLOSE ${t} ${why} side=${d} op=${fmt(x.op)} sl=${fmt(x.sl)} tp=${fmt(x.tp)} px=${fmt(px)} R=${fmt(d * (px - x.op) / Math.abs(x.op - x.sl0))} cmt=${x.cmt}`);
