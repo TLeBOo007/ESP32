@@ -29,6 +29,10 @@ const EXAM_CFG = !EXAM_ON ? null : Object.assign({
 }, process.env.EXAM_CONFIG ? JSON.parse(process.env.EXAM_CONFIG) : {});
 const START_BALANCE = EXAM_ON ? EXAM_CFG.start : Number(process.env.START_BALANCE || 10000);
 const MIN_VOLUME = Number(process.env.MIN_VOLUME || (EXAM_ON ? 100 : 1)), STEP_VOLUME = Number(process.env.STEP_VOLUME || (EXAM_ON ? 100 : 1)), MAX_VOLUME = Number(process.env.MAX_VOLUME || (EXAM_ON ? EXAM_CFG.capContracts * 100 : 1000000));   // volume unit = 1/100 contract
+const { makeDeviceWatch, windowNotice } = require('./lib/watch');
+const devWatch = makeDeviceWatch({ minutes: process.env.DEVICE_ALERT_MIN === undefined ? 5 : Number(process.env.DEVICE_ALERT_MIN) });   // 0 = off
+const ST_MARKET = process.env.LINE_STATUS_MARKET !== '0';
+let lastWin = null;
 const LINE_TOKEN = process.env.LINE_CHANNEL_TOKEN || '';
 const LINE_TO = process.env.LINE_TO || '';
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET || '';              // only needed for the "สถานะ" chat command (webhook signature check)
@@ -163,8 +167,10 @@ function examEval() {
     const run = () => exam.evaluate({ trades: allTrades(), balance: acct.balance, floating: floatingAll(), open: allPositions().length, serverT: t });
     let r = run(); const events = r.events.slice();
     if (r.flatten) { examFlatten(r.flatten, t); r = run(); events.push(...r.events); }
+    if (ST_MARKET) { const wn = windowNotice(lastWin, r.view.windowOpen); if (wn) events.push({ text: wn, raw: true }); }
+    lastWin = r.view.windowOpen;
     meta.exam = exam.serialize(); examView = r.view;
-    if (events.length) { notify(events.map(text => ({ type: 'status', text: '🎓 ' + text }))); save(); }
+    if (events.length) { notify(events.map(e => typeof e === 'string' ? ({ type: 'status', text: '🎓 ' + e }) : ({ type: 'status', text: e.text }))); save(); }
   } catch (e) { console.error('exam:', e); }
   examBusy = false;
   return examView;
@@ -258,7 +264,7 @@ function sendDaily(dayKey, startBal) {
 }
 function statusData() {
   rollDay();
-  return { exam: exam ? examEval() : null, balance: acct.balance, dayStart: meta.dayStartBalance, open: allPositions().length, pending: allOrders().length,
+  return { exam: exam ? examEval() : null, device: devWatch.state(now()), balance: acct.balance, dayStart: meta.dayStartBalance, open: allPositions().length, pending: allOrders().length,
     symbols: [...insts.values()].map(i => { const s = i.bpe.status(); return { sym: i.sym, digits: i.cfg.digits, bid: i.engine.quote.bid, bias: s.bias, biasH4: s.biasH4, biasD1: s.biasD1, kz: s.kz, su: setupBrief(i), tr: tradeBrief(i) }; }) };
 }
 function checkFeeds() {
@@ -399,7 +405,7 @@ function examBrief() {
   const ct = (allPositions().reduce((a, p) => a + p.volume, 0) + allOrders().reduce((a, o) => a + o.volume, 0)) / 100;
   return { st: x.status === 'failed' ? 1 : x.status === 'passed' ? 2 : 0, blk: x.blockedToday ? 1 : 0, win: x.windowOpen ? 1 : 0, ok: x.consistencyOK ? 1 : 0,
     start: x.start, tgt: x.target, mll: x.mll, pr: x.profit, buf: x.buffer, flr: x.floor, dp: x.dayPnl, dll: x.dll, dl: x.dllLeft === null ? 0 : x.dllLeft,
-    risk: x.riskPct, cap: x.capContracts, ct, comm: x.commissionRT, bp: x.bestPct, need: x.needProfit, d: x.days, md: x.minDays };
+    risk: x.riskPct, cap: x.capContracts, ct, comm: x.commissionRT, cs: x.consistency, bp: x.bestPct, need: x.needProfit, d: x.days, md: x.minDays };
 }
 function metaView(inst) {
   rollDay();
@@ -497,6 +503,7 @@ const handlers = {
 const page = fs.readFileSync(path.join(__dirname, 'public', 'index.html'));
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  if (req.headers['x-device'] === 'esp32' && authed(req)) { const m = devWatch.seen(now()); if (m) notify([{ type: 'status', text: m }]); }
   try {
     if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true, trades: allTrades().length, lastBarT: engine.lastBarT, bars: meta.barCount, signalEngine: BPE_ON ? bpe.status().bars : 'off', feed: FEED_KIND, symbols: SYM_LIST });
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) return send(res, 200, page, 'text/html; charset=utf-8');
@@ -543,6 +550,6 @@ if (FEED_KIND !== 'none') {
   feed = FIRST.feed;
 }
 if (require.main === module) {
-  server.listen(PORT, () => { console.log(`paper server on :${PORT}, symbols ${SYM_LIST.join(',')}, start balance ${engine.startBalance}, data ${DATA_FILE}, feed ${FEED_KIND}`); let d = 1000; for (const f of feeds.values()) { f.start(d); d += 4000; } setInterval(checkFeeds, 60000).unref(); if (exam) setInterval(examEval, 30000).unref(); });
+  server.listen(PORT, () => { console.log(`paper server on :${PORT}, symbols ${SYM_LIST.join(',')}, start balance ${engine.startBalance}, data ${DATA_FILE}, feed ${FEED_KIND}`); let d = 1000; for (const f of feeds.values()) { f.start(d); d += 4000; } setInterval(checkFeeds, 60000).unref(); if (exam) setInterval(examEval, 30000).unref(); setInterval(() => { const m = devWatch.check(now()); if (m) notify([{ type: 'status', text: m }]); }, 30000).unref(); });
 }
-module.exports = { server, engine, meta, bpe, feed, insts, acct, statusN, checkFeeds, sendDaily, exam, examEval, examGuard };
+module.exports = { server, engine, meta, bpe, feed, insts, acct, statusN, checkFeeds, sendDaily, exam, examEval, examGuard, devWatch };

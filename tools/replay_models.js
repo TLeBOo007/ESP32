@@ -18,7 +18,7 @@ const host = {
 const bpe = new Bpe(Object.assign({ symbol: 'US100' }, cfg), host);
 const close = (x, px, t, why) => { const d = x.type === 0 ? 1 : -1; sim.bal += d * (px - x.op) * x.vol / 100; sim.live.splice(sim.live.indexOf(x), 1);
   sim.trades.push({ cmt: x.cmt, why, R: d * (px - x.op) / Math.abs(x.op - x.sl), pnl: d * (px - x.op) * x.vol / 100, t, sig: x.sig }); };
-const S = 3000; let sends = 0; const sigBy = {};
+const S = +(process.env.WARM || 3000); let sends = 0; const sigBy = {};
 for (let i = 0; i < S; i++) bpe.addHistory(...rows[i].slice(0, 5));
 for (let i = S; i < rows.length; i++) {
   const [t, o, h, l, c] = rows[i];
@@ -39,4 +39,4 @@ const by = {}; for (const t of sim.trades) { const k = t.cmt.replace(/^BPE /, ''
 console.log(`bars ${rows.length - S}  signals ${sends}  closed ${sim.trades.length}  balance ${sim.bal.toFixed(2)}  indexErrors ${bpe.indexError ? 1 : 0}`);
 console.log('  signals by model: ' + JSON.stringify(sigBy) + '  (signals that did not fill expired/cancelled)');
 for (const k of Object.keys(by).sort()) console.log(`  ${k.padEnd(12)} n=${String(by[k].n).padStart(3)} win=${(100 * by[k].w / by[k].n).toFixed(0)}%  sumR=${by[k].R.toFixed(2)}`);
-if (process.env.DUMP) fs.writeFileSync(process.env.DUMP, JSON.stringify(sim.trades.map(t => ({ cmt: t.cmt, R: t.R, why: t.sig.why.text })), null, 1));
+if (process.env.DUMP) fs.writeFileSync(process.env.DUMP, JSON.stringify(sim.trades.map(t => ({ cmt: t.cmt, R: t.R, t: t.t, why: t.sig.why.text })), null, 1));
