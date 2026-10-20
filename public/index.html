@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BPE Paper Desk</title>
+<title>SR Paper Desk</title>
 <meta name="theme-color" content="#0d1b2a">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -187,7 +187,7 @@
 </head>
 <body>
 <div id="gate" hidden>
-  <h1>BPE Paper Desk</h1>
+  <h1>SR Paper Desk</h1>
   <p>ใส่ API Key ค่าเดียวกับ API_KEY ใน Railway ระบบจะจำไว้ในเบราว์เซอร์นี้เท่านั้น</p>
   <input id="key" type="password" autocomplete="off" aria-label="API Key">
   <button id="ok">เข้าดู</button>
@@ -196,7 +196,7 @@
 
 <div class="wrap" id="app" hidden>
   <header class="top">
-    <div class="brand"><b>BPE Paper Desk</b><span>Forward test · บัญชีจำลอง</span></div>
+    <div class="brand"><b>SR Paper Desk</b><span>Forward test · บัญชีจำลอง</span></div>
     <div class="tools">
       <span class="pill" id="status"><i class="dot"></i><span>กำลังเชื่อมต่อ</span></span>
       <button class="icon" id="theme" aria-label="สลับโหมดสว่าง/มืด" title="สลับโหมดสว่าง/มืด"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 1.8a6.2 6.2 0 0 1 0 12.4z" fill="currentColor"/></svg></button>
@@ -524,6 +524,17 @@ function thKz(t) {
   return t;
 }
 
+function renderSrFocus(sr, bp, s) {
+  const m = s.symbols.find(y => y.sym === sr.sym) || {}, f = (bp && bp.feed) || {}, sym = sr.sym;
+  const feedTxt = f.kind === 'none' ? 'ไม่ได้ตั้งค่า (รอแท่งจาก /tv)' : f.lastError ? `<span class="dn">ผิดพลาด: ${esc(f.lastError)}</span>` : (f.lastPollT ? 'ดึงล่าสุด ' + new Date(f.lastPollT * 1000).toLocaleTimeString('th-TH') : 'รอดึงครั้งแรก');
+  const lv = sr.levels.length ? sr.levels.map(x => `<span class="chip">${esc(x.name)} ${px(x.price, sym)}${x.used ? ' · ใช้แล้ว' : ''}</span>`).join('') : '<span class="mut">วันนี้ไม่มีแนว</span>';
+  const tc = sr.trend > 0 ? 'up' : sr.trend < 0 ? 'dn' : '';
+  $('focus').innerHTML = `<div class="head"><h2>${esc(sym)}</h2><span class="note">แนวรับแนวต้าน + เทรน · ${sr.contracts} สัญญา</span></div>
+    <h3 class="${tc}">เทรนชั่วโมง: ${esc(sr.trendText)}</h3><div class="px">ราคา ${px(m.bid, sym)}</div>
+    <dl class="kv"><dt>แนววันนี้</dt><dd>${lv}</dd><dt>สถานะ</dt><dd>${esc(sr.state)}</dd><dt>สัญญาณที่เกิด</dt><dd>${sr.signals} ครั้ง</dd><dt>แหล่งราคา</dt><dd>${esc(f.symbol || '')} ${feedTxt}</dd><dt>ข้อมูลที่เก็บ</dt><dd>M5 ${sr.bars} แท่ง · H1 ${sr.hours} ชั่วโมง</dd></dl>
+    <div class="note" style="margin-top:8px">เข้า: แตะแนวครั้งแรกในช่วง 09:30–12:00 นิวยอร์กแล้วปิดกลับ เฉพาะตามเทรน · Stop 0.825 ATR · เป้า 2R · ปิดทุกไม้ 16:00 นิวยอร์ก</div>`;
+}
+
 function renderFocus(bp, s) {
   const m = s.symbols.find(y => y.sym === bp.sym) || {}, b = biasTxt(bp.bias);
   const poi = bp.poi.length ? bp.poi.map(p => `<span class="chip">${esc(p.type)} ${px(p.bot, bp.sym)}–${px(p.top, bp.sym)}</span>`).join('') : '<span class="mut">ยังไม่มี</span>';
@@ -560,7 +571,7 @@ function renderTrades(tr, st) {
   if (!tr.trades.length) { $('closed').innerHTML = '<div class="empty">ยังไม่มีไม้ที่ปิด Forward test เริ่มบันทึกทันทีที่มีไม้แรก</div>'; return; }
   const rows = tr.trades.slice().reverse().map(t => {
     const w = t.why, open = openId === t.id;
-    const detail = open ? `<tr class="det"><td colspan="8"><div class="why"><div><h4>ทำไมถึงเข้า</h4><pre>${esc(w ? w.text : 'ไม่มีข้อมูล ไม้นี้ไม่ได้มาจากตัวสร้างสัญญาณ BPE')}</pre>${w && w.chain ? `<div class="note" style="margin-top:8px">ลำดับเหตุการณ์<br>${esc(w.chain.join('\n')).replace(/\n/g, '<br>')}</div>` : ''}</div>
+    const detail = open ? `<tr class="det"><td colspan="8"><div class="why"><div><h4>ทำไมถึงเข้า</h4><pre>${esc(w ? w.text : 'ไม่มีข้อมูล ไม้นี้ไม่ได้มาจากตัวสร้างสัญญาณอัตโนมัติ')}</pre>${w && w.chain ? `<div class="note" style="margin-top:8px">ลำดับเหตุการณ์<br>${esc(w.chain.join('\n')).replace(/\n/g, '<br>')}</div>` : ''}</div>
       <div><h4>ทำไมถึงออก</h4><pre>${esc(t.exitWhy || '')}</pre><div class="stats"><span class="chip">ไปทางที่ถูกสูงสุด +${t.mfeR}R</span><span class="chip">สวนสูงสุด ${t.maeR}R</span><span class="chip">ถือ ${t.bars} แท่ง</span></div></div></div></td></tr>` : '';
     return `<tr class="tr" data-id="${t.id}" tabindex="0"><td>${t.id}</td><td><b>${t.sym || ''}</b></td><td class="${t.side === 1 ? 'up' : 'dn'}">${sideName(t.side)}</td><td>${px(t.open, t.sym)} → ${px(t.close, t.sym)}</td><td>${esc(t.reason)}</td><td class="r ${cls(t.R)}">${signed(t.R)}R</td><td class="r ${cls(t.pnl)}">${signed(t.pnl)}</td><td class="r mut">${nyStr(t.closeT)}</td></tr>${detail}`;
   }).join('');
@@ -593,6 +604,7 @@ async function refresh() {
   try {
     const q = selSym ? '?sym=' + selSym : '';
     const [s, st, tr, sg, bp] = await Promise.all([api('/api/meta' + q), api('/api/stats'), api('/api/trades?limit=100'), api('/api/signals'), api('/api/bpe' + q)]);
+    const sr = await api('/api/sr' + q).catch(() => null);
     const ch = await api('/api/chart?sym=' + (selSym || s.symbol) + '&tf=' + chartTf).catch(() => null);
     const ex = await api('/api/exam').catch(() => null);
     $('gate').hidden = true; $('app').hidden = false;
@@ -601,7 +613,7 @@ async function refresh() {
     bp.symbols.forEach(x => DG[x.sym] = x.digits ?? DG[x.sym]);
     bp.symbols.forEach(x => DZ[x.sym] = x.kzf);
     renderAccount(s, st); renderExam(ex); renderBoard(s, bp, s.utc); renderChart(tr.equity, s.startBalance); if (ch) renderPrice(ch);
-    if (bp.enabled) renderFocus(bp, s); else $('focus').innerHTML = '<div class="empty">ตัวสร้างสัญญาณปิดอยู่ (BPE_ENABLED=0)</div>';
+    if (sr && sr.strategy === 'sr') renderSrFocus(sr, bp, s); else if (bp.enabled) renderFocus(bp, s); else $('focus').innerHTML = '<div class="empty">ตัวสร้างสัญญาณปิดอยู่ (BPE_ENABLED=0)</div>';
     renderOpen(s); renderTrades(tr, st); renderSignals(sg);
     const anyErr = bp.symbols.find(x => x.feed && x.feed.lastError), stale = s.barAge < 0 || s.barAge > 900;
     $('status').innerHTML = `<i class="dot ${anyErr || stale ? 'bad' : 'ok'}"></i><span>${anyErr ? 'ดึงราคาไม่ได้: ' + esc(anyErr.sym) : s.barAge < 0 ? 'ยังไม่มีแท่งราคา' : stale ? 'ราคาหยุดมา ' + Math.round(s.barAge / 60) + ' นาที' : 'ราคาสด · ' + (s.barAge < 60 ? s.barAge + ' วิ' : Math.round(s.barAge / 60) + ' นาที') + 'ที่แล้ว'}</span>`;

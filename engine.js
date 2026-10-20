@@ -52,7 +52,7 @@ class Engine {
     if (sl > 0 && (side === BUY ? sl >= entry : sl <= entry)) return { error: 'SL_WRONG_SIDE' };
     if (tp > 0 && (side === BUY ? tp <= entry : tp >= entry)) return { error: 'TP_WRONG_SIDE' };
     const id = this.nextId++;
-    const base = { id, sym: this.sym, side, volume, sl, tp, sl0: sl, tp0: tp, comment: String(o.comment || ''), createdT: Number(o.t) || 0, afterT: Number(o.afterT) || 0 };   // afterT: bars up to this server time are ignored (signal came from that bar)
+    const base = { id, sym: this.sym, side, volume, sl, tp, sl0: sl, tp0: tp, comment: String(o.comment || ''), why: o.why, createdT: Number(o.t) || 0, afterT: Number(o.afterT) || 0 };   // afterT: bars up to this server time are ignored (signal came from that bar)
     if (kind === 'market') {
       const p = { ...base, open: entry, openT: Number(o.t) || 0, best: entry, worst: entry, bars: 0 };
       this.positions.push(p);

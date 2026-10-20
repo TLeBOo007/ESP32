@@ -11,6 +11,7 @@ const path = require('path');
 const { Engine } = require('./engine');
 const { toServer, serverToUtc } = require('./lib/timeutil');
 const { Bpe } = require('./lib/bpe');
+const { Sr } = require('./lib/sr');
 const { Feed } = require('./lib/feed');
 const { TickRec } = require('./lib/tickrec');
 const { TopstepBars } = require('./lib/topstep');
@@ -43,7 +44,10 @@ const ST_DAILY = process.env.LINE_STATUS_DAILY !== '0', ST_FEED = process.env.LI
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID || '';
 const NOTIFY_URL = process.env.NOTIFY_WEBHOOK_URL || '';
-const BPE_ON = (process.env.BPE_ENABLED || '1') !== '0';
+const STRATEGY = (process.env.STRATEGY || 'sr').toLowerCase();             // 'sr' = support/resistance + trend (lib/sr.js, trades by itself); 'bpe' = the old ICT signal engine (signals for the ESP32)
+const SR_ON = STRATEGY === 'sr';
+const SR_CONTRACTS = Number(process.env.SR_CONTRACTS || 2);                // contracts per trade (micro futures in EXAM mode)
+const BPE_ON = !SR_ON && (process.env.BPE_ENABLED || '1') !== '0';
 const FEED_KIND = (process.env.FEED || 'none').toLowerCase();
 const MAX_OPEN_TOTAL = Number(process.env.BPE_MAX_OPEN || 3);          // positions + pending orders across all instruments (0 = no cap)
 
@@ -121,6 +125,7 @@ for (const sym of SYM_LIST) {
       return t;
     },
   });
+  inst.sr = new Sr(Object.assign({ contracts: SR_CONTRACTS }, process.env.SR_CONFIG ? JSON.parse(process.env.SR_CONFIG) : {}, E('SR_CONFIG') ? JSON.parse(E('SR_CONFIG')) : {}));
   insts.set(sym, inst);
 }
 const FIRST = insts.get(SYM_LIST[0]);
@@ -146,6 +151,7 @@ try {
     if (meta.feed && !meta.feeds[FIRST.sym]) meta.feeds[FIRST.sym] = meta.feed;
     const bpes = d.bpes || (d.bpe ? { [FIRST.sym]: d.bpe } : {});
     for (const [sym, b] of Object.entries(bpes)) { const i = insts.get(sym); if (i) try { i.bpe.load(b); } catch (e) { console.error('could not load signal engine state for', sym + ':', e.message); } }
+    for (const [sym, s] of Object.entries(d.srs || {})) { const i = insts.get(sym); if (i) try { i.sr.load(s); } catch (e) { console.error('could not load SR state for', sym + ':', e.message); } }
     console.log('state loaded:', allTrades().length, 'trades,', meta.signals.length, 'signals,', insts.size, 'instruments');
   }
 } catch (e) { console.error('could not load state:', e.message); }
@@ -204,9 +210,9 @@ function save() {
     saveTimer = null;
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
-      const engines = {}, bpes = {};
-      for (const i of insts.values()) { engines[i.sym] = JSON.parse(i.engine.serialize()); bpes[i.sym] = i.bpe.serialize(); }
-      fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify({ v: 2, acct, engines, meta, bpes }));
+      const engines = {}, bpes = {}, srs = {};
+      for (const i of insts.values()) { engines[i.sym] = JSON.parse(i.engine.serialize()); bpes[i.sym] = i.bpe.serialize(); srs[i.sym] = i.sr.serialize(); }
+      fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify({ v: 2, acct, engines, meta, bpes, srs }));
       fs.renameSync(DATA_FILE + '.tmp', DATA_FILE);
     } catch (e) { console.error('save failed:', e.message); }
   }, 300);
@@ -327,9 +333,31 @@ function ingestBar(inst, t, o, h, l, c, isServerTime, evaluate = true) {
       events.push({ type: 'signal', signal: { ...sig } }); made++;
     }
   }
+  if (ok && SR_ON) {
+    let r = { actions: [], flat: false };
+    try { r = evaluate ? inst.sr.onBar(ts, o, h, l, c, { bid: c, ask: c + SPREAD }) : (inst.sr.addHistory(ts, o, h, l, c), r); } catch (e) { console.error('SR (' + inst.sym + '):', e); }
+    if (r.flat && (engine.positions.length || engine.orders.length)) { for (const p of [...engine.positions]) engine.close(p.id, undefined, ts, undefined, 'eod'); for (const x of [...engine.orders]) engine.cancel(x.id); }
+    for (const a of r.actions) made += srTake(inst, a, tu, ts, events);
+  }
   flush(inst, events);
   if (exam && ok && evaluate) examEval();
   return { ok, processed: ok ? 1 : 0, lastBarT: engine.lastBarT, signals: made, sym: inst.sym };
+}
+// SR strategy: the server trades by itself (paper). Every signal is logged, then taken at market unless a rule says no (one trade at a time, exam rules).
+function srTake(inst, a, tu, ts, events) {
+  const en = inst.engine, side = a.action === 'buy' ? 1 : 2;
+  const sig = pushSignal({ sym: inst.sym, action: a.action, price: a.price, sl: a.sl, tp: a.tp, comment: `${a.comment} RR${a.rr}`, barT: tu, source: 'sr', why: a.why });
+  events.push({ type: 'signal', signal: { ...sig } });
+  const skip = reason => { sig.status = 'skipped'; sig.reason = reason; sig.decidedT = now(); events.push({ type: 'decision', signal: { ...sig } }); return 1; };
+  if (inst.sr.c.oneAtATime && (en.positions.length || en.orders.length)) return skip('มีไม้เปิดอยู่แล้ว');
+  const b = { side, kind: 'market', volume: Math.round(inst.sr.c.contracts * 100), sl: a.sl, tp: a.tp };
+  const g = examGuard(inst, b); if (g) return skip(String(g.error).slice(0, 110));
+  const r = en.placeOrder({ side, kind: 'market', volume: b.volume, sl: a.sl, tp: a.tp, t: ts, afterT: ts, comment: sig.comment, why: a.why });
+  if (r.error) return skip(r.error);
+  sig.status = 'taken'; sig.note = 'auto (SR)'; sig.orderId = r.id; sig.decidedT = now(); meta.takenToday++;
+  const pos = en.positions.find(x => x.id === r.id); if (pos) pos.sigId = sig.id;
+  events.push({ type: 'decision', signal: { ...sig } });
+  return 1;
 }
 
 function importHistory(b) {
@@ -341,7 +369,7 @@ function importHistory(b) {
   for (const r of bars) {
     const [t, o, h, l, c] = r.map(Number);
     if (!(t > 1e9 && t < 1e11 && o > 0 && h >= l && c > 0)) continue;
-    if (bpe.addHistory(isServer ? t : toServer(t), o, h, l, c)) added++;
+    if (SR_ON ? instOf(b.sym || b.symbol).sr.addHistory(isServer ? t : toServer(t), o, h, l, c) : bpe.addHistory(isServer ? t : toServer(t), o, h, l, c)) added++;
   }
   save();
   return { ok: true, added, skipped: bars.length - added, ...bpe.status().bars };
@@ -481,10 +509,20 @@ const handlers = {
   'POST /api/cancel': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.cancel(Number(b.id)); flush(inst); return r; },
   'POST /api/amend': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.amend(Number(b.id), Number(b.sl), Number(b.tp)); save(); return r; },
   'POST /api/close': b => { const inst = ownerOfId(Number(b.id)) || symOf(b); const r = inst.engine.close(Number(b.id), Number(b.price), Number(b.t), Number(b.volume), b.reason || 'time'); flush(inst); return r; },
+  'GET /api/sr': (_b, url) => ({ ...symOf(null, url).sr.status(), strategy: STRATEGY, contracts: SR_CONTRACTS, symbols: [...insts.values()].map(i => ({ sym: i.sym, ...i.sr.status() })) }),
   'GET /api/bpe': (_b, url) => ({ ...symStatus(symOf(null, url)), symbols: [...insts.values()].map(i => { const x = symStatus(i); return { sym: i.sym, kz: x.kz, bias: x.bias, biasH4: x.biasH4, biasD1: x.biasD1, state: x.state, last: x.last, ny: x.ny, feed: x.feed, bars: x.bars, kzf: { asia: !!i.bpe.kzA, london: !!i.bpe.kzL, nyam: !!i.bpe.kzAM, nypm: !!i.bpe.kzPM, wait: !!i.bpe.c.waitEquityOpen }, digits: i.cfg.digits }; }) }),
   // candles for the dashboard chart: closed bars the signal engine keeps (server time), its POI zones, open orders/positions and closed trades of this symbol
   'GET /api/chart': (_b, url) => {
-    const inst = symOf(null, url), bp = inst.bpe, tfq = Number(url.searchParams.get('tf')), tf = tfq === 5 ? 5 : bp.c.poiTF;
+    const inst = symOf(null, url);
+    if (SR_ON) {                                                    // SR strategy: M5 candles it keeps (server time) and today's four levels as thin zones
+      const sr = inst.sr, n = Math.max(20, Math.min(600, Number(url.searchParams.get('n')) || 200)), from = Math.max(0, sr.t.length - n), t0 = (sr.t[from] || 0) + 7 * 3600, en = inst.engine, bars = [];
+      for (let i = from; i < sr.t.length; i++) bars.push([sr.t[i] + 7 * 3600, sr.o[i], sr.h[i], sr.l[i], sr.cl[i]]);
+      const slim = x => ({ id: x.id, side: x.side, price: x.price || x.open, sl: x.sl, tp: x.tp, t: x.openT || x.createdT || 0, comment: x.comment || '' });
+      return { sym: inst.sym, tf: 5, poiTF: 5, digits: inst.cfg.digits, bars, bias: 0, state: sr.status().state, quote: en.quote, setup: null,
+        poi: sr.status().levels.map(x => ({ top: x.price, bot: x.price, type: x.name })), orders: en.orders.map(slim), positions: en.positions.map(x => ({ ...slim(x), price: x.open })),
+        trades: en.trades.filter(x => x.closeT >= t0).map(x => ({ id: x.id, side: x.side, open: x.open, close: x.close, openT: x.openT, closeT: x.closeT, reason: x.reason, R: x.R, pnl: x.pnl, comment: x.comment || '' })) };
+    }
+    const bp = inst.bpe, tfq = Number(url.searchParams.get('tf')), tf = tfq === 5 ? 5 : bp.c.poiTF;
     const n = Math.max(20, Math.min(600, Number(url.searchParams.get('n')) || (tf === 5 ? 200 : 160))), d = bp.st.tf[tf], from = Math.max(0, d.t.length - n), t0 = d.t[from] || 0;
     const bars = []; for (let i = from; i < d.t.length; i++) bars.push([d.t[i], d.o[i], d.h[i], d.l[i], d.c[i]]);
     const en = inst.engine, slim = x => ({ id: x.id, side: x.side, price: x.price || x.open, sl: x.sl, tp: x.tp, t: x.openT || x.createdT || 0, comment: x.comment || '' });
@@ -514,7 +552,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (req.headers['x-device'] === 'esp32' && authed(req)) { const m = devWatch.seen(now()); if (m) notify([{ type: 'status', text: m }]); }
   try {
-    if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true, trades: allTrades().length, lastBarT: engine.lastBarT, bars: meta.barCount, signalEngine: BPE_ON ? bpe.status().bars : 'off', feed: FEED_KIND, symbols: SYM_LIST, footprint: tickrec ? (() => { const t = tickrec.status(); return { state: t.state, trades: t.trades, bars: t.bars, ageSec: t.lastTradeAgeSec }; })() : 'off' });
+    if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true, trades: allTrades().length, lastBarT: engine.lastBarT, bars: meta.barCount, strategy: STRATEGY, signalEngine: SR_ON ? FIRST.sr.status().bars : BPE_ON ? bpe.status().bars : 'off', feed: FEED_KIND, symbols: SYM_LIST, footprint: tickrec ? (() => { const t = tickrec.status(); return { state: t.state, trades: t.trades, bars: t.bars, ageSec: t.lastTradeAgeSec }; })() : 'off' });
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) return send(res, 200, page, 'text/html; charset=utf-8');
     if (req.method === 'POST' && url.pathname === '/tv') {          // TradingView cannot send headers: key goes in ?key= or in the JSON body
       const b = await readBody(req);
@@ -566,7 +604,7 @@ if (FEED_KIND !== 'none' && (FEED_KIND !== 'topstep' || topstepBars)) {
       kind: FEED_KIND, topstep: topstepBars, symbol: inst.cfg.feedSymbol, key: process.env.FEED_KEY, base: process.env.FEED_BASE_URL, warmupDays: process.env.FEED_WARMUP_DAYS,
       state: meta.feeds[inst.sym], now, save, log: m => console.log('[' + inst.sym + '] ' + m), offset: 3 * (k++),       // staggered: the free Twelve Data plan allows 8 requests a minute
       fetchJson: async (url, headers) => { const r = await fetch(url, { headers, signal: AbortSignal.timeout(20000) }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); },
-      history: rows => { for (const r of rows) inst.bpe.addHistory(toServer(r[0]), r[1], r[2], r[3], r[4]); },
+      history: rows => { for (const r of rows) (SR_ON ? inst.sr : inst.bpe).addHistory(toServer(r[0]), r[1], r[2], r[3], r[4]); },
       bar: (r, evaluate) => ingestBar(inst, r[0], r[1], r[2], r[3], r[4], false, evaluate),
     });
     inst.feed = f; feeds.set(inst.sym, f);
