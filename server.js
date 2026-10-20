@@ -12,6 +12,8 @@ const { Engine } = require('./engine');
 const { toServer, serverToUtc } = require('./lib/timeutil');
 const { Bpe } = require('./lib/bpe');
 const { Feed } = require('./lib/feed');
+const { TickRec } = require('./lib/tickrec');
+const { TopstepBars } = require('./lib/topstep');
 const crypto = require('crypto');
 const { Status, dailyText, statusText } = require('./lib/status');
 
@@ -77,6 +79,7 @@ const FUT = {
   GBPUSD: { digits: 5, spread: 0.0001,  mult: 6250 },
   AUDUSD: { digits: 5, spread: 0.0001,  mult: 10000 },
 };
+const TOPSTEP_SYM = { US100: 'MNQ', US500: 'MES', US30: 'MYM', XAUUSD: 'MGC', XAGUSD: 'SIL', EURUSD: 'M6E', GBPUSD: 'M6B', AUDUSD: 'M6A' };   // FEED=topstep: the micro future that is quoted for each symbol
 const LEGACY = !process.env.SYMBOLS && !EXAM_ON;                                       // old single-symbol setup: SYMBOL / DIGITS / SPREAD / MULTIPLIER decide everything
 const SYM_LIST = (process.env.SYMBOLS || process.env.SYMBOL || 'US100').split(',').map(x => x.trim().toUpperCase()).filter(Boolean).filter(x => { if (EXAM_ON && !FUT[x]) { console.warn('EXAM: ' + x + ' has no micro-futures preset (USDJPY / USDCAD are quoted the other way round) - skipped'); return false; } return true; });
 if (!SYM_LIST.length) { console.error('EXAM: no usable symbols. Use SYMBOLS=' + Object.keys(FUT).join(',')); process.exit(1); }
@@ -91,7 +94,7 @@ for (const sym of SYM_LIST) {
     ? { digits: Number(process.env.DIGITS || 2), spread: Number(process.env.SPREAD || 0), mult: Number(process.env.MULTIPLIER || 1), jpy: false, bpe: {} }
     : { digits: Number(E('DIGITS') || pr.digits || 2), mult: Number(E('MULT') || pr.mult || 1), jpy: !!pr.jpy, bpe: pr.bpe || {},
         spread: Number(E('SPREAD') || (FEED_KIND === 'twelvedata' && pr.spreadTD) || pr.spread || 0) };
-  cfg.feedSymbol = (LEGACY ? process.env.FEED_SYMBOL : E('FEED_SYMBOL')) || (FEED_KIND === 'twelvedata' ? pr.twelve : pr.yahoo) || undefined;
+  cfg.feedSymbol = (LEGACY ? process.env.FEED_SYMBOL : E('FEED_SYMBOL')) || (FEED_KIND === 'twelvedata' ? pr.twelve : FEED_KIND === 'topstep' ? TOPSTEP_SYM[sym] : pr.yahoo) || undefined;
   const point = Math.pow(10, -cfg.digits);
   const inst = { sym, cfg, feed: null };
   inst.engine = new Engine({ startBalance: START_BALANCE, multiplier: cfg.mult, acct, sym, commissionRT: EXAM_ON ? EXAM_CFG.commissionRT : 0 });
@@ -456,6 +459,12 @@ function authed(req, alt) {
 const symOf = (b, url) => instOf((b && (b.sym || b.symbol)) || (url && url.searchParams.get('sym')));
 const handlers = {
   'GET /api/meta': (_b, url) => metaView(symOf(null, url)),
+  'GET /api/footprint': (_b, url) => {
+    if (!tickrec) return { enabled: false };
+    const day = url.searchParams.get('day'); const bars = day ? tickrec.day(day) : tickrec.bars(Number(url.searchParams.get('n') || 50));
+    const slim = url.searchParams.get('levels') === '1' ? bars : bars.map(({ lv, ...r }) => r);
+    return { enabled: true, status: tickrec.status(), days: tickrec.days(), bars: slim };
+  },
   'GET /api/exam': () => (exam ? { ...examEval(), instruments: [...insts.values()].map(i => ({ sym: i.sym, mult: i.engine.mult, spread: i.cfg.spread })) } : { enabled: false }),
   'GET /api/state': (_b, url) => symOf(null, url).engine.state(),
   'GET /api/stats': () => allStats(),
@@ -505,7 +514,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (req.headers['x-device'] === 'esp32' && authed(req)) { const m = devWatch.seen(now()); if (m) notify([{ type: 'status', text: m }]); }
   try {
-    if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true, trades: allTrades().length, lastBarT: engine.lastBarT, bars: meta.barCount, signalEngine: BPE_ON ? bpe.status().bars : 'off', feed: FEED_KIND, symbols: SYM_LIST });
+    if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, { ok: true, trades: allTrades().length, lastBarT: engine.lastBarT, bars: meta.barCount, signalEngine: BPE_ON ? bpe.status().bars : 'off', feed: FEED_KIND, symbols: SYM_LIST, footprint: tickrec ? (() => { const t = tickrec.status(); return { state: t.state, trades: t.trades, bars: t.bars, ageSec: t.lastTradeAgeSec }; })() : 'off' });
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) return send(res, 200, page, 'text/html; charset=utf-8');
     if (req.method === 'POST' && url.pathname === '/tv') {          // TradingView cannot send headers: key goes in ?key= or in the JSON body
       const b = await readBody(req);
@@ -533,13 +542,28 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// Footprint recorder (data only, never orders): TICKREC=1 + TOPSTEP_USER + TOPSTEP_KEY. Needs @microsoft/signalr (listed in package.json).
+let tickrec = null;
+if (process.env.TICKREC === '1' && process.env.TOPSTEP_USER && process.env.TOPSTEP_KEY) {
+  try {
+    tickrec = new TickRec({ user: process.env.TOPSTEP_USER, key: process.env.TOPSTEP_KEY, api: process.env.TOPSTEP_API, hub: process.env.TOPSTEP_HUB, symbol: process.env.TICKREC_SYMBOL || 'MNQ',
+      dir: path.join(DATA_DIR, 'footprint'), log: m => console.log(m), signalR: require('@microsoft/signalr'),
+      fetchJson: async (url, o) => JSON.parse(await (await fetch(url, { ...o, signal: AbortSignal.timeout(20000) })).text()) });
+  } catch (e) { console.error('TICKREC disabled: ' + e.message); }
+}
+const topstepBars = FEED_KIND === 'topstep' && process.env.TOPSTEP_USER && process.env.TOPSTEP_KEY ? new TopstepBars({
+  user: process.env.TOPSTEP_USER, key: process.env.TOPSTEP_KEY, api: process.env.TOPSTEP_API, live: process.env.TOPSTEP_LIVE === '1', label: process.env.TOPSTEP_BAR_LABEL === 'end' ? 'end' : 'start',
+  now: () => Math.floor(Date.now() / 1000), log: m => console.log(m),
+  post: async (url, body, headers) => { const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', accept: 'text/plain', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) }); if (!r.ok) throw new Error('HTTP ' + r.status); return JSON.parse(await r.text()); },
+}) : null;
+if (FEED_KIND === 'topstep' && !topstepBars) console.error('FEED=topstep needs TOPSTEP_USER and TOPSTEP_KEY: no feed will run');
 const feeds = new Map(); let feed = null;
-if (FEED_KIND !== 'none') {
+if (FEED_KIND !== 'none' && (FEED_KIND !== 'topstep' || topstepBars)) {
   let k = 0;
   for (const inst of insts.values()) {
     if (!meta.feeds[inst.sym]) meta.feeds[inst.sym] = {};
     const f = new Feed({
-      kind: FEED_KIND, symbol: inst.cfg.feedSymbol, key: process.env.FEED_KEY, base: process.env.FEED_BASE_URL, warmupDays: process.env.FEED_WARMUP_DAYS,
+      kind: FEED_KIND, topstep: topstepBars, symbol: inst.cfg.feedSymbol, key: process.env.FEED_KEY, base: process.env.FEED_BASE_URL, warmupDays: process.env.FEED_WARMUP_DAYS,
       state: meta.feeds[inst.sym], now, save, log: m => console.log('[' + inst.sym + '] ' + m), offset: 3 * (k++),       // staggered: the free Twelve Data plan allows 8 requests a minute
       fetchJson: async (url, headers) => { const r = await fetch(url, { headers, signal: AbortSignal.timeout(20000) }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); },
       history: rows => { for (const r of rows) inst.bpe.addHistory(toServer(r[0]), r[1], r[2], r[3], r[4]); },
@@ -550,6 +574,6 @@ if (FEED_KIND !== 'none') {
   feed = FIRST.feed;
 }
 if (require.main === module) {
-  server.listen(PORT, () => { console.log(`paper server on :${PORT}, symbols ${SYM_LIST.join(',')}, start balance ${engine.startBalance}, data ${DATA_FILE}, feed ${FEED_KIND}`); let d = 1000; for (const f of feeds.values()) { f.start(d); d += 4000; } setInterval(checkFeeds, 60000).unref(); if (exam) setInterval(examEval, 30000).unref(); setInterval(() => { const m = devWatch.check(now()); if (m) notify([{ type: 'status', text: m }]); }, 30000).unref(); });
+  server.listen(PORT, () => { console.log(`paper server on :${PORT}, symbols ${SYM_LIST.join(',')}, start balance ${engine.startBalance}, data ${DATA_FILE}, feed ${FEED_KIND}`); let d = 1000; for (const f of feeds.values()) { f.start(d); d += 4000; } if (tickrec) tickrec.start(); setInterval(checkFeeds, 60000).unref(); if (exam) setInterval(examEval, 30000).unref(); setInterval(() => { const m = devWatch.check(now()); if (m) notify([{ type: 'status', text: m }]); }, 30000).unref(); });
 }
 module.exports = { server, engine, meta, bpe, feed, insts, acct, statusN, checkFeeds, sendDaily, exam, examEval, examGuard, devWatch };

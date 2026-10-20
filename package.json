@@ -6,7 +6,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/engine.test.js && node test/server.test.js && node test/multi.test.js && node test/feed.test.js && node test/bpe.test.js && node test/bpe_server.test.js && node test/feed_server.test.js"
+    "test": "node test/engine.test.js && node test/server.test.js && node test/multi.test.js && node test/feed.test.js && node test/bpe.test.js && node test/bpe_server.test.js && node test/feed_server.test.js && node test/tickrec.test.js && node test/sdfw.test.js && node test/topstep.test.js"
+  },
+  "dependencies": {
+    "@microsoft/signalr": "^8.0.7"
   },
   "engines": {
     "node": ">=18"
